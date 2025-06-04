@@ -1,0 +1,22 @@
+{
+  "database_path": "data/marketplace_data.db",
+  "report_paths": {
+    "oz_barcodes_xlsx": "data/ozon/oz_barcodes.xlsx",
+    "oz_orders_csv": "data/ozon/oz_orders.csv",
+    "oz_prices_xlsx": "data/ozon/oz_prices.xlsx",
+    "oz_products_csv": "data/ozon/oz_products.csv",
+    "wb_prices_xlsx": "data/wb/wb_prices.xlsx", 
+    "wb_products_dir": "data/wb/products/",
+    "analytic_report_xlsx": "data/custom_reports/analytic_report.xlsx"
+  },
+  "google_sheets": {
+    "punta_url": "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=0",
+    "encoding": "utf-8"
+  },
+  "app_settings": {
+    "theme": "light",
+    "debug_mode": false,
+    "auto_backup": true,
+    "max_file_size_mb": 100
+  }
+} 
