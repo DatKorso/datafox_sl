@@ -351,15 +351,9 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
                     target_date = (today - timedelta(days=days_back)).strftime('%Y-%m-%d')
                     order_count = orders_data.get(target_date, 0)
                     ws.cell(row=row_num, column=column_map[col_name]).value = order_count
-            
-            # Update PUNTA_ columns
-            punta_data = data.get('punta', {})
-            for col_name, col_num in column_map.items():
-                if col_name.startswith('PUNTA_'):
-                    # Extract the punta column name (remove PUNTA_ prefix)
-                    punta_col_name = col_name[6:]  # Remove 'PUNTA_' prefix
-                    punta_value = punta_data.get(punta_col_name, '')
-                    ws.cell(row=row_num, column=col_num).value = punta_value
+        
+        # Update all PUNTA_ columns dynamically
+        update_punta_columns_dynamically(ws, column_map, wb_sku_data, data_start_row)
         
         # Save the updated file
         wb.save(file_path)
@@ -444,6 +438,7 @@ def process_analytic_report(db_conn, file_path: str) -> Tuple[bool, str, Dict]:
 def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]:
     """
     Retrieves Punta data for given WB SKUs.
+    Now works with dynamic punta_table schema - automatically detects available columns.
     
     Args:
         db_conn: Database connection
@@ -456,6 +451,25 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
         return {}
     
     try:
+        # Import the new function to get dynamic columns
+        from .db_crud import get_punta_table_columns
+        
+        # Get all available columns dynamically
+        available_columns = get_punta_table_columns(db_conn)
+        
+        if not available_columns:
+            st.info("📋 Таблица punta_table не существует или пуста")
+            return {}
+        
+        # Remove wb_sku from list of data columns (it's the key column)
+        data_columns = [col for col in available_columns if col != 'wb_sku']
+        
+        if not data_columns:
+            st.warning("⚠️ В таблице punta_table нет колонок данных (только wb_sku)")
+            return {}
+        
+        st.info(f"🔍 Найдено {len(data_columns)} колонок в punta_table: {', '.join(data_columns)}")
+        
         # Convert wb_sku_list to integers for proper matching with punta_table
         wb_skus_int = []
         for wb_sku in wb_sku_list:
@@ -469,53 +483,101 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
         if not wb_skus_int:
             return {}
         
-        # Get all available columns from punta_table
-        columns_query = """
-        SELECT COLUMN_NAME 
-        FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_NAME = 'punta_table'
-            AND COLUMN_NAME != 'wb_sku'
-        """
-        
-        try:
-            columns_df = db_conn.execute(columns_query).fetchdf()
-            if columns_df.empty:
-                # Fallback to hardcoded columns if information_schema doesn't work
-                available_columns = ['gender', 'season', 'model_name', 'material', 'new_last', 'mega_last', 'best_last']
-            else:
-                available_columns = columns_df['COLUMN_NAME'].tolist()
-        except:
-            # Fallback to hardcoded columns
-            available_columns = ['gender', 'season', 'model_name', 'material', 'new_last', 'mega_last', 'best_last']
-        
-        # Build query to get punta data
-        select_columns = ['wb_sku'] + available_columns
-        
-        punta_query = f"""
-        SELECT {', '.join(select_columns)}
-        FROM punta_table 
-        WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_int))})
-        """
-        
-        punta_df = db_conn.execute(punta_query, wb_skus_int).fetchdf()
-        
-        if punta_df.empty:
-            return {}
-        
-        # Convert to dict format
-        result_map = {}
-        for _, row in punta_df.iterrows():
-            wb_sku = str(row['wb_sku'])  # Convert back to string for consistency with input
-            result_map[wb_sku] = {}
+        # Build query to get punta data with dynamic columns
+        if 'wb_sku' in available_columns:
+            select_columns = ['wb_sku'] + data_columns
             
-            for column in available_columns:
-                if column in row and pd.notna(row[column]):
-                    result_map[wb_sku][column] = str(row[column])
-                else:
-                    result_map[wb_sku][column] = ""
-        
-        return result_map
+            punta_query = f"""
+            SELECT {', '.join(f'"{col}"' for col in select_columns)}
+            FROM punta_table 
+            WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_int))})
+            """
+            
+            punta_df = db_conn.execute(punta_query, wb_skus_int).fetchdf()
+            
+            if punta_df.empty:
+                st.info(f"📭 Данные Punta не найдены для {len(wb_skus_int)} WB SKU")
+                return {}
+            
+            st.success(f"✅ Найдены данные Punta для {len(punta_df)} из {len(wb_skus_int)} WB SKU")
+            
+            # Convert to dict format
+            result_map = {}
+            for _, row in punta_df.iterrows():
+                wb_sku = str(row['wb_sku'])  # Convert back to string for consistency with input
+                result_map[wb_sku] = {}
+                
+                for column in data_columns:
+                    if column in row and pd.notna(row[column]):
+                        result_map[wb_sku][column] = str(row[column])
+                    else:
+                        result_map[wb_sku][column] = ""
+            
+            return result_map
+        else:
+            st.error("❌ Колонка wb_sku не найдена в таблице punta_table")
+            return {}
         
     except Exception as e:
         st.warning(f"Ошибка при получении данных Punta: {e}")
-        return {} 
+        return {}
+
+def get_dynamic_punta_columns(db_conn) -> List[str]:
+    """
+    Получает список доступных колонок из punta_table для создания PUNTA_ колонок.
+    
+    Returns:
+        List of column names available in punta_table (excluding wb_sku)
+    """
+    try:
+        from .db_crud import get_punta_table_columns
+        
+        all_columns = get_punta_table_columns(db_conn)
+        
+        # Remove wb_sku as it's the key column, not data column
+        data_columns = [col for col in all_columns if col != 'wb_sku']
+        
+        return data_columns
+        
+    except Exception as e:
+        st.warning(f"Не удалось получить динамические колонки Punta: {e}")
+        return []
+
+def update_punta_columns_dynamically(ws, column_map: Dict[str, int], wb_sku_data: Dict[str, Dict], 
+                                   data_start_row: int = 9):
+    """
+    Динамически обновляет все PUNTA_ колонки в Excel файле.
+    Автоматически обрабатывает любые колонки, которые начинаются с PUNTA_.
+    
+    Args:
+        ws: Excel worksheet object
+        column_map: Mapping of column names to column numbers
+        wb_sku_data: Data for each WB SKU
+        data_start_row: Row number where data starts (default 9)
+    """
+    # Find all PUNTA_ columns in the Excel file
+    punta_columns = {col_name: col_num for col_name, col_num in column_map.items() 
+                     if col_name.startswith('PUNTA_')}
+    
+    if not punta_columns:
+        st.info("📋 PUNTA_ колонки не найдены в аналитическом отчете")
+        return
+    
+    st.info(f"🔄 Обновление {len(punta_columns)} PUNTA_ колонок: {', '.join(punta_columns.keys())}")
+    
+    # Process each row
+    for row_num in range(data_start_row, ws.max_row + 1):
+        wb_sku_cell = ws.cell(row=row_num, column=column_map.get("WB_SKU", 2))
+        wb_sku = str(wb_sku_cell.value).strip() if wb_sku_cell.value else ""
+        
+        if not wb_sku or wb_sku not in wb_sku_data:
+            continue
+        
+        punta_data = wb_sku_data[wb_sku].get('punta', {})
+        
+        # Update each PUNTA_ column
+        for col_name, col_num in punta_columns.items():
+            # Extract the actual column name (remove PUNTA_ prefix)
+            punta_col_name = col_name[6:]  # Remove 'PUNTA_' prefix
+            punta_value = punta_data.get(punta_col_name, '')
+            ws.cell(row=row_num, column=col_num).value = punta_value 

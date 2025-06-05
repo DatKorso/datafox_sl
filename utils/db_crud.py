@@ -21,6 +21,8 @@ def import_data_from_dataframe(
     Renames DataFrame columns to match target DuckDB table column names based on schema.
     Applies specific data transformations as noted in the schema.
     Now includes data cleaning and validation with detailed logging.
+    
+    Special handling for punta_table: uses dynamic schema creation.
     (Formerly _import_data_from_dataframe in db_utils.py)
     """
     if not con:
@@ -28,9 +30,18 @@ def import_data_from_dataframe(
     if df.empty:
         return True, 0, "Input DataFrame is empty. Nothing to import."
     
+    # Special handling for punta_table - use dynamic import
+    if table_name == "punta_table":
+        return import_dynamic_punta_table(con, df)
+    
     table_schema_def = get_table_schema_definition(table_name)
     if not table_schema_def:
         return False, 0, f"No schema definition found for table '{table_name}' via db_schema.py."
+
+    # Check if table uses dynamic schema
+    columns_info = table_schema_def.get("columns")
+    if columns_info == "DYNAMIC":
+        return False, 0, f"Table '{table_name}' uses dynamic schema but special handling is not implemented. Please add specific logic."
 
     schema_columns_info = get_table_columns_from_schema(table_name)
     if not schema_columns_info:
@@ -134,6 +145,106 @@ def import_data_from_dataframe(
         return True, records_imported, ""
     except Exception as e_import:
         return False, 0, f"Error importing data into table '{table_name}': {e_import}"
+
+def import_dynamic_punta_table(
+    con: duckdb.DuckDBPyConnection,
+    df: pd.DataFrame
+) -> tuple[bool, int, str]:
+    """
+    Динамически импортирует данные в таблицу punta_table с автоматическим созданием схемы.
+    Использует DuckDB функцию автоматического вывода типов данных.
+    Специальная обработка для wb_sku - конвертация в INTEGER, если возможно.
+    """
+    if not con:
+        return False, 0, "No database connection."
+    if df.empty:
+        return True, 0, "Input DataFrame is empty. Nothing to import."
+    
+    try:
+        # 1. Очистка данных - удаляем полностью пустые строки
+        df_clean = df.dropna(how='all').copy()
+        
+        if df_clean.empty:
+            return True, 0, "All rows were empty after cleaning."
+        
+        st.info(f"📊 Очищено данных: {len(df)} → {len(df_clean)} строк")
+        
+        # 2. Специальная обработка wb_sku - попытаться конвертировать в INTEGER
+        if 'wb_sku' in df_clean.columns:
+            st.info("🔄 Специальная обработка wb_sku...")
+            original_count = len(df_clean)
+            
+            # Конвертируем wb_sku в числа, где возможно
+            df_clean['wb_sku'] = pd.to_numeric(df_clean['wb_sku'], errors='coerce')
+            
+            # Удаляем строки с невалидными wb_sku (если wb_sku является ключевым полем)
+            df_clean = df_clean.dropna(subset=['wb_sku'])
+            df_clean['wb_sku'] = df_clean['wb_sku'].astype('Int64')
+            
+            invalid_count = original_count - len(df_clean)
+            if invalid_count > 0:
+                st.warning(f"⚠️ Исключено {invalid_count} строк с невалидными wb_sku")
+            
+            st.success(f"✅ wb_sku успешно конвертирован в INTEGER для {len(df_clean)} строк")
+        
+        # 3. Удаляем существующую таблицу
+        con.execute("DROP TABLE IF EXISTS punta_table;")
+        st.info("🗑️ Существующая таблица punta_table удалена")
+        
+        # 4. Регистрируем DataFrame во временную таблицу
+        con.register('temp_punta_df', df_clean)
+        
+        # 5. Создаем новую таблицу с автоматическим выводом схемы
+        con.execute("""
+            CREATE TABLE punta_table AS 
+            SELECT * FROM temp_punta_df;
+        """)
+        
+        # 6. Очищаем временную таблицу
+        con.unregister('temp_punta_df')
+        
+        # 7. Показываем информацию о созданной таблице
+        schema_info = con.execute("DESCRIBE punta_table;").fetchdf()
+        st.success("✅ Таблица punta_table создана с автоматическим выводом схемы:")
+        st.dataframe(schema_info, use_container_width=True)
+        
+        # 8. Показываем превью данных
+        preview_data = con.execute("SELECT * FROM punta_table LIMIT 5;").fetchdf()
+        st.info("📋 Превью данных в новой таблице:")
+        st.dataframe(preview_data, use_container_width=True)
+        
+        records_imported = len(df_clean)
+        return True, records_imported, ""
+        
+    except Exception as e:
+        return False, 0, f"Ошибка при динамическом импорте punta_table: {str(e)}"
+
+def get_punta_table_columns(con: duckdb.DuckDBPyConnection) -> list[str]:
+    """
+    Получает список всех колонок в таблице punta_table (для универсальной работы).
+    Возвращает пустой список если таблица не существует.
+    """
+    if not con:
+        return []
+    
+    try:
+        # Проверяем существование таблицы
+        table_exists = con.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.tables 
+            WHERE table_name = 'punta_table' AND table_schema = 'main'
+        """).fetchone()[0]
+        
+        if table_exists == 0:
+            return []
+        
+        # Получаем список колонок
+        columns_df = con.execute("DESCRIBE punta_table;").fetchdf()
+        return columns_df['column_name'].tolist()
+        
+    except Exception as e:
+        st.warning(f"Не удалось получить колонки таблицы punta_table: {e}")
+        return []
 
 # --- Database Statistics ---
 

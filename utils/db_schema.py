@@ -79,21 +79,12 @@ HARDCODED_SCHEMA = {
         "pre_update_action": "DELETE FROM wb_prices;"
     },
     "punta_table": {
-        "description": "Данные Punta из Google Sheets",
+        "description": "Данные Punta из Google Sheets (универсальная схема)",
         "file_type": "google_sheets",
         "read_params": {},
         "config_report_key": "punta_google_sheets_url",
-        "columns": [
-            {'target_col_name': 'wb_sku',      'sql_type': 'INTEGER', 'source_col_name': 'wb_sku', 'notes': 'convert_to_integer'},
-            {'target_col_name': 'gender',     'sql_type': 'VARCHAR', 'source_col_name': 'gender', 'notes': None},
-            {'target_col_name': 'season',     'sql_type': 'VARCHAR', 'source_col_name': 'season', 'notes': None},
-            {'target_col_name': 'model_name', 'sql_type': 'VARCHAR', 'source_col_name': 'model_name', 'notes': None},
-            {'target_col_name': 'material',   'sql_type': 'VARCHAR', 'source_col_name': 'material', 'notes': None},
-            {'target_col_name': 'new_last',   'sql_type': 'VARCHAR', 'source_col_name': 'new_last', 'notes': None},
-            {'target_col_name': 'mega_last',  'sql_type': 'VARCHAR', 'source_col_name': 'mega_last', 'notes': None},
-            {'target_col_name': 'best_last',  'sql_type': 'VARCHAR', 'source_col_name': 'best_last', 'notes': None}
-        ],
-        "pre_update_action": "DELETE FROM punta_table;"
+        "columns": "DYNAMIC",  # Указывает, что схема определяется динамически
+        "pre_update_action": "DROP TABLE IF EXISTS punta_table;"  # Полная пересборка таблицы
     }
 }
 
@@ -105,23 +96,44 @@ def get_table_schema_definition(table_name: str) -> dict | None:
     """Returns the schema definition for a specific table from HARDCODED_SCHEMA."""
     return HARDCODED_SCHEMA.get(table_name)
 
-def get_table_columns_from_schema(table_name: str) -> list:
+def get_table_columns_from_schema(table_name: str) -> list[tuple[str, str, str, str]]:
     """
-    Helper function to get column details for a specific table from the hardcoded schema.
-    Returns list of (target_col_name, sql_type, source_col_name, notes).
-    If table_name is not found, returns an empty list.
+    Extracts column information from the hardcoded schema for a given table.
+    
+    Returns:
+        List of tuples: (target_col_name, sql_type, source_col_name, notes)
+        Returns empty list if table not found or uses dynamic schema.
     """
-    table_def = HARDCODED_SCHEMA.get(table_name)
-    if table_def and "columns" in table_def:
-        return [
-            (
-                col.get('target_col_name'),
-                col.get('sql_type'),
-                col.get('source_col_name'),
-                col.get('notes')
-            ) for col in table_def["columns"]
-        ]
-    return []
+    table_schema = HARDCODED_SCHEMA.get(table_name)
+    if not table_schema:
+        return []
+    
+    columns_info = table_schema.get("columns")
+    
+    # Handle dynamic schema
+    if columns_info == "DYNAMIC":
+        return []  # Dynamic schema - no predefined columns
+    
+    if not columns_info:
+        return []
+    
+    return [
+        (col_def['target_col_name'], col_def['sql_type'], col_def['source_col_name'], col_def.get('notes'))
+        for col_def in columns_info
+    ]
+
+def is_dynamic_schema_table(table_name: str) -> bool:
+    """
+    Checks if a table uses dynamic schema.
+    
+    Returns:
+        True if table uses dynamic schema, False otherwise
+    """
+    table_schema = HARDCODED_SCHEMA.get(table_name)
+    if not table_schema:
+        return False
+    
+    return table_schema.get("columns") == "DYNAMIC"
 
 def create_tables_from_schema(con: duckdb.DuckDBPyConnection) -> bool:
     """
