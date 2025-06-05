@@ -11,10 +11,15 @@ This module provides functionality to:
 import pandas as pd
 import openpyxl
 from openpyxl import load_workbook
+from openpyxl.drawing.image import Image
 import os
 from datetime import datetime, timedelta
 import streamlit as st
 from typing import Dict, List, Tuple, Optional
+import requests
+from io import BytesIO
+import tempfile
+from PIL import Image as PILImage
 from utils.db_search_helpers import get_normalized_wb_barcodes, get_ozon_barcodes_and_identifiers
 
 def load_analytic_report_file(file_path: str) -> Tuple[Optional[pd.DataFrame], Optional[openpyxl.Workbook], str]:
@@ -282,9 +287,230 @@ def create_backup_file(file_path: str) -> str:
     
     return backup_path
 
+def get_wb_image_url(wb_sku: str) -> str:
+    """
+    Генерирует URL изображения WB на основе артикула.
+    Реализует алгоритм из Google Sheets для определения правильного URL.
+    
+    Args:
+        wb_sku: Артикул WB (строка или число)
+        
+    Returns:
+        URL изображения или пустая строка если не удалось сгенерировать
+    """
+    try:
+        # Конвертируем в целое число
+        a = int(float(wb_sku))
+        
+        # Вычисляем b и c
+        b = a // 100000
+        c = a // 1000
+        
+        # Определяем volNum по алгоритму из Google Sheets
+        if b <= 143:
+            vol_num = "01"
+        elif b <= 287:
+            vol_num = "02"
+        elif b <= 431:
+            vol_num = "03"
+        elif b <= 719:
+            vol_num = "04"
+        elif b <= 1007:
+            vol_num = "05"
+        elif b <= 1061:
+            vol_num = "06"
+        elif b <= 1115:
+            vol_num = "07"
+        elif b <= 1169:
+            vol_num = "08"
+        elif b <= 1313:
+            vol_num = "09"
+        elif b <= 1601:
+            vol_num = "10"
+        elif b <= 1655:
+            vol_num = "11"
+        elif b <= 1919:
+            vol_num = "12"
+        elif b <= 2045:
+            vol_num = "13"
+        elif b <= 2189:
+            vol_num = "14"
+        elif b <= 2405:
+            vol_num = "15"
+        elif b <= 2621:
+            vol_num = "16"
+        elif b <= 2837:
+            vol_num = "17"
+        elif b <= 3053:
+            vol_num = "18"
+        elif b <= 3269:
+            vol_num = "19"
+        elif b <= 3485:
+            vol_num = "20"
+        elif b <= 3701:
+            vol_num = "21"
+        elif b <= 3917:
+            vol_num = "22"
+        elif b <= 4133:
+            vol_num = "23"
+        elif b <= 4349:
+            vol_num = "24"
+        else:
+            vol_num = "25"
+        
+        # Формируем URL
+        image_url = f"https://basket-{vol_num}.wbbasket.ru/vol{b}/part{c}/{a}/images/tm/1.webp"
+        return image_url
+        
+    except (ValueError, TypeError) as e:
+        st.warning(f"Не удалось сгенерировать URL изображения для WB_SKU {wb_sku}: {e}")
+        return ""
+
+def download_wb_image(wb_sku: str, timeout: int = 30) -> Optional[BytesIO]:
+    """
+    Загружает изображение WB по артикулу.
+    
+    Args:
+        wb_sku: Артикул WB
+        timeout: Таймаут для запроса в секундах
+        
+    Returns:
+        BytesIO объект с изображением или None если загрузка не удалась
+    """
+    image_url = get_wb_image_url(wb_sku)
+    if not image_url:
+        return None
+    
+    try:
+        # Используем headers чтобы имитировать браузер
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        response = requests.get(image_url, timeout=timeout, headers=headers)
+        response.raise_for_status()
+        
+        # Проверяем что это действительно изображение
+        content_type = response.headers.get('content-type', '')
+        if not content_type.startswith('image/'):
+            st.warning(f"URL не содержит изображение для WB_SKU {wb_sku}: {content_type}")
+            return None
+        
+        return BytesIO(response.content)
+        
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Ошибка при загрузке изображения для WB_SKU {wb_sku}: {e}")
+        return None
+    except Exception as e:
+        st.warning(f"Неожиданная ошибка при загрузке изображения для WB_SKU {wb_sku}: {e}")
+        return None
+
+def insert_wb_image_to_cell(ws, row_num: int, col_num: int, wb_sku: str, cell_width: float = 64, cell_height: float = 64) -> Tuple[bool, Optional[str]]:
+    """
+    Загружает и вставляет изображение WB в ячейку Excel.
+    Конвертирует WebP в PNG для совместимости с Excel.
+    Привязывает изображение к ячейке для правильного поведения при изменении размеров.
+    
+    Args:
+        ws: Worksheet объект openpyxl
+        row_num: Номер строки
+        col_num: Номер колонки
+        wb_sku: Артикул WB
+        cell_width: Ширина изображения в пикселях
+        cell_height: Высота изображения в пикселях
+        
+    Returns:
+        Tuple: (успех, путь_к_временному_файлу_для_очистки)
+        Возвращает путь к временному файлу, который нужно удалить позже
+    """
+    try:
+        # Загружаем изображение
+        image_data = download_wb_image(wb_sku)
+        if not image_data:
+            return False, None
+        
+        # Создаем временный файл для изображения в формате PNG
+        try:
+            temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            temp_file_path = temp_file.name
+            temp_file.close()  # Закрываем файл для записи через PIL
+            
+            # Открываем WebP изображение из BytesIO
+            image_data.seek(0)
+            pil_image = PILImage.open(image_data)
+            
+            # Конвертируем в RGB если необходимо (для PNG)
+            if pil_image.mode in ("RGBA", "P"):
+                pil_image = pil_image.convert("RGB")
+            
+            # Сохраняем как PNG
+            pil_image.save(temp_file_path, "PNG")
+            
+            # Дополнительная проверка что файл существует
+            if not os.path.exists(temp_file_path):
+                st.error(f"❌ Не удалось создать временный файл для WB_SKU {wb_sku}")
+                return False, None
+            
+        except Exception as temp_error:
+            st.error(f"❌ Ошибка конвертации изображения для WB_SKU {wb_sku}: {temp_error}")
+            return False, None
+        
+        try:
+            # Создаем объект изображения openpyxl
+            img = Image(temp_file_path)
+            
+            # Устанавливаем размер изображения
+            img.width = cell_width
+            img.height = cell_height
+            
+            # Определяем координаты ячейки
+            from openpyxl.utils import get_column_letter
+            cell_address = f"{get_column_letter(col_num)}{row_num}"
+            
+            # Настраиваем привязку изображения к ячейке
+            # Это заставляет изображение двигаться и изменяться вместе с ячейкой
+            img.anchor = cell_address
+            
+            # Вставляем изображение в ячейку (без текста)
+            ws.add_image(img, cell_address)
+            
+            # Настраиваем размер строки и столбца чтобы изображение помещалось
+            ws.row_dimensions[row_num].height = max(ws.row_dimensions[row_num].height or 15, cell_height * 0.75)
+            
+            # Устанавливаем ширину столбца если необходимо
+            column_letter = get_column_letter(col_num)
+            current_width = ws.column_dimensions[column_letter].width
+            if current_width is None or current_width < (cell_width / 7):  # Примерное соотношение пикселей к Excel единицам
+                ws.column_dimensions[column_letter].width = cell_width / 7
+            
+            # Оставляем ячейку пустой (без текста гиперссылки)
+            # Если нужна гиперссылка, её можно добавить через комментарий к изображению
+            
+            return True, temp_file_path
+            
+        except Exception as e_insert:
+            st.error(f"❌ Ошибка вставки изображения для WB_SKU {wb_sku}: {e_insert}")
+            # Если вставка не удалась, удаляем временный файл сразу
+            try:
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except Exception as cleanup_error:
+                pass  # Тихо игнорируем ошибки очистки
+            raise e_insert
+                
+    except Exception as e:
+        st.error(f"❌ Общая ошибка при обработке изображения для WB_SKU {wb_sku}: {e}")
+        return False, None
+
 def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tuple[bool, str]:
     """
     Updates the analytic report Excel file with calculated data.
+    Now includes support for PHOTO_FROM_WB column with image insertion.
     
     Args:
         file_path: Path to the Excel file
@@ -293,6 +519,8 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
     Returns:
         Tuple of (success, error_message)
     """
+    temp_image_files = []  # Список временных файлов для очистки
+    
     try:
         # Create backup only for non-temporary files
         backup_created = False
@@ -314,16 +542,31 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
             if cell_value:
                 column_map[str(cell_value).strip()] = col_num
         
+        # Check if PHOTO_FROM_WB column exists
+        has_photo_column = "PHOTO_FROM_WB" in column_map
+        if has_photo_column:
+            st.info("🖼️ Найдена колонка PHOTO_FROM_WB - будут загружены изображения товаров")
+        
         # Process data starting from row 9
         data_start_row = 9
+        photo_success_count = 0
+        photo_total_count = 0
+        failed_images = []  # Список неудачных загрузок для детального лога
         
+        # Collect all WB SKUs for batch processing info
+        wb_skus_to_process = []
         for row_num in range(data_start_row, ws.max_row + 1):
             wb_sku_cell = ws.cell(row=row_num, column=column_map.get("WB_SKU", 2))
             wb_sku = str(wb_sku_cell.value).strip() if wb_sku_cell.value else ""
-            
-            if not wb_sku or wb_sku not in wb_sku_data:
-                continue
-            
+            if wb_sku and wb_sku in wb_sku_data:
+                wb_skus_to_process.append((row_num, wb_sku))
+        
+        # Show compact processing info
+        if has_photo_column and wb_skus_to_process:
+            st.info(f"🔄 Обработка {len(wb_skus_to_process)} изображений товаров...")
+        
+        # Process each row
+        for row_num, wb_sku in wb_skus_to_process:
             data = wb_sku_data[wb_sku]
             
             # Update size columns (OZ_SIZE_22 to OZ_SIZE_44)
@@ -351,16 +594,89 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
                     target_date = (today - timedelta(days=days_back)).strftime('%Y-%m-%d')
                     order_count = orders_data.get(target_date, 0)
                     ws.cell(row=row_num, column=column_map[col_name]).value = order_count
+            
+            # Insert WB image if PHOTO_FROM_WB column exists
+            if has_photo_column:
+                photo_total_count += 1
+                col_num = column_map["PHOTO_FROM_WB"]
+                
+                # Генерируем URL для проверки доступности изображения
+                image_url = get_wb_image_url(wb_sku)
+                
+                if image_url:
+                    # Не добавляем никакого текста в ячейку - только изображение
+                    
+                    # Пытаемся вставить изображение
+                    try:
+                        success, temp_file_path = insert_wb_image_to_cell(ws, row_num, col_num, wb_sku)
+                        if success:
+                            photo_success_count += 1
+                            if temp_file_path:
+                                temp_image_files.append(temp_file_path)
+                        else:
+                            failed_images.append(f"WB_SKU {wb_sku} (строка {row_num}): Не удалось загрузить изображение")
+                    except Exception as image_error:
+                        failed_images.append(f"WB_SKU {wb_sku} (строка {row_num}): {str(image_error)}")
+                else:
+                    failed_images.append(f"WB_SKU {wb_sku} (строка {row_num}): Не удалось сгенерировать URL")
         
         # Update all PUNTA_ columns dynamically
+        punta_columns = {col_name: col_num for col_name, col_num in column_map.items() 
+                         if col_name.startswith('PUNTA_')}
+        if punta_columns:
+            st.info(f"🔄 Обновление {len(punta_columns)} PUNTA_ колонок: {', '.join(punta_columns.keys())}")
+        
         update_punta_columns_dynamically(ws, column_map, wb_sku_data, data_start_row)
         
         # Save the updated file
         wb.save(file_path)
+        
+        # Show compact image loading statistics
+        if has_photo_column and photo_total_count > 0:
+            if photo_success_count == photo_total_count:
+                st.success(f"🖼️ Все изображения загружены успешно: {photo_success_count} из {photo_total_count}")
+            else:
+                st.warning(f"🖼️ Изображения: {photo_success_count} из {photo_total_count} успешно загружены")
+                
+                # Show failed images in expander
+                if failed_images:
+                    with st.expander(f"❌ Детали неудачных загрузок ({len(failed_images)})", expanded=False):
+                        for error in failed_images:
+                            st.text(f"• {error}")
+        
         return True, ""
         
     except Exception as e:
         return False, f"Ошибка при обновлении файла: {str(e)}"
+    
+    finally:
+        # Очищаем временные файлы изображений после сохранения
+        if temp_image_files:
+            cleaned_count = 0
+            cleanup_errors = []
+            
+            for temp_file_path in temp_image_files:
+                try:
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                        cleaned_count += 1
+                    else:
+                        cleanup_errors.append(f"Файл не найден: {os.path.basename(temp_file_path)}")
+                except Exception as cleanup_error:
+                    cleanup_errors.append(f"Ошибка удаления {os.path.basename(temp_file_path)}: {cleanup_error}")
+            
+            # Компактный отчет об очистке
+            if cleaned_count == len(temp_image_files):
+                st.info(f"🧹 Очищено {cleaned_count} временных файлов")
+            else:
+                st.warning(f"🧹 Очищено {cleaned_count} из {len(temp_image_files)} временных файлов")
+                
+                # Показываем ошибки очистки в спойлере
+                if cleanup_errors:
+                    with st.expander(f"⚠️ Проблемы при очистке ({len(cleanup_errors)})", expanded=False):
+                        for error in cleanup_errors:
+                            st.text(f"• {error}")
+        # Если нет временных файлов, не показываем ничего (убираем лишний лог)
 
 def process_analytic_report(db_conn, file_path: str) -> Tuple[bool, str, Dict]:
     """
@@ -439,6 +755,7 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
     """
     Retrieves Punta data for given WB SKUs.
     Now works with dynamic punta_table schema - automatically detects available columns.
+    Takes FIRST occurrence for each wb_sku (most actual data) and formats values properly for Excel.
     
     Args:
         db_conn: Database connection
@@ -484,13 +801,20 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
             return {}
         
         # Build query to get punta data with dynamic columns
+        # Use window function to get FIRST occurrence for each wb_sku
         if 'wb_sku' in available_columns:
             select_columns = ['wb_sku'] + data_columns
             
             punta_query = f"""
+            WITH first_occurrences AS (
+                SELECT {', '.join(f'"{col}"' for col in select_columns)},
+                       ROW_NUMBER() OVER (PARTITION BY wb_sku ORDER BY ROWID) as rn
+                FROM punta_table 
+                WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_int))})
+            )
             SELECT {', '.join(f'"{col}"' for col in select_columns)}
-            FROM punta_table 
-            WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_int))})
+            FROM first_occurrences 
+            WHERE rn = 1
             """
             
             punta_df = db_conn.execute(punta_query, wb_skus_int).fetchdf()
@@ -499,9 +823,9 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
                 st.info(f"📭 Данные Punta не найдены для {len(wb_skus_int)} WB SKU")
                 return {}
             
-            st.success(f"✅ Найдены данные Punta для {len(punta_df)} из {len(wb_skus_int)} WB SKU")
+            st.success(f"✅ Найдены данные Punta для {len(punta_df)} из {len(wb_skus_int)} WB SKU (первые вхождения)")
             
-            # Convert to dict format
+            # Convert to dict format with Excel-friendly formatting
             result_map = {}
             for _, row in punta_df.iterrows():
                 wb_sku = str(row['wb_sku'])  # Convert back to string for consistency with input
@@ -509,7 +833,39 @@ def get_punta_data(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[str, str]]
                 
                 for column in data_columns:
                     if column in row and pd.notna(row[column]):
-                        result_map[wb_sku][column] = str(row[column])
+                        raw_value = row[column]
+                        
+                        # Format values to be Excel-friendly
+                        if column == 'sort':
+                            # Convert sort to integer string to avoid decimals in Excel
+                            try:
+                                if pd.notna(raw_value) and raw_value != '' and str(raw_value).lower() != 'nan':
+                                    formatted_value = str(int(float(raw_value)))
+                                else:
+                                    formatted_value = ""
+                            except (ValueError, TypeError):
+                                formatted_value = str(raw_value) if raw_value else ""
+                        elif column == 'supply_n':
+                            # Handle supply_n: keep only numeric values, exclude dates
+                            try:
+                                str_value = str(raw_value).strip()
+                                # If it looks like a date (contains dots or slashes), make it empty
+                                if '.' in str_value or '/' in str_value or len(str_value) > 4:
+                                    formatted_value = ""
+                                else:
+                                    # Try to parse as integer to ensure it's numeric
+                                    int(str_value)
+                                    formatted_value = str_value
+                            except (ValueError, TypeError):
+                                formatted_value = ""
+                        else:
+                            # For other columns, convert to string as usual
+                            formatted_value = str(raw_value).strip()
+                            # Clean up common problematic values
+                            if formatted_value.lower() in ['nan', 'none', 'null']:
+                                formatted_value = ""
+                        
+                        result_map[wb_sku][column] = formatted_value
                     else:
                         result_map[wb_sku][column] = ""
             
@@ -560,10 +916,7 @@ def update_punta_columns_dynamically(ws, column_map: Dict[str, int], wb_sku_data
                      if col_name.startswith('PUNTA_')}
     
     if not punta_columns:
-        st.info("📋 PUNTA_ колонки не найдены в аналитическом отчете")
-        return
-    
-    st.info(f"🔄 Обновление {len(punta_columns)} PUNTA_ колонок: {', '.join(punta_columns.keys())}")
+        return  # Тихо выходим если нет PUNTA_ колонок
     
     # Process each row
     for row_num in range(data_start_row, ws.max_row + 1):

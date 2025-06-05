@@ -8,7 +8,8 @@
 - ⚙️ **Flexible Configuration**: Customizable paths and settings
 - 🚀 **Real-time Integration**: Direct import from Google Sheets documents
 - 📋 **Custom Analytic Reports**: Automated Excel report generation with cross-marketplace data
-- 🔄 **Universal Punta Table**: Dynamic schema adaptation for any Google Sheets structure (NEW!)
+- 🔄 **Universal Punta Table**: Dynamic schema adaptation for any Google Sheets structure
+- 🖼️ **Product Images Integration**: Automatic Wildberries product image loading in reports (NEW!)
 
 ## Quick Start
 
