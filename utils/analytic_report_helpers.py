@@ -507,7 +507,7 @@ def insert_wb_image_to_cell(ws, row_num: int, col_num: int, wb_sku: str, cell_wi
         st.error(f"❌ Общая ошибка при обработке изображения для WB_SKU {wb_sku}: {e}")
         return False, None
 
-def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tuple[bool, str]:
+def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict], include_images: bool = False) -> Tuple[bool, str]:
     """
     Updates the analytic report Excel file with calculated data.
     Now includes support for PHOTO_FROM_WB column with image insertion.
@@ -515,6 +515,7 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
     Args:
         file_path: Path to the Excel file
         wb_sku_data: Dict containing calculated data for each WB SKU
+        include_images: Whether to download and insert product images from WB
         
     Returns:
         Tuple of (success, error_message)
@@ -542,10 +543,13 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
             if cell_value:
                 column_map[str(cell_value).strip()] = col_num
         
-        # Check if PHOTO_FROM_WB column exists
-        has_photo_column = "PHOTO_FROM_WB" in column_map
-        if has_photo_column:
-            st.info("🖼️ Найдена колонка PHOTO_FROM_WB - будут загружены изображения товаров")
+        # Check if PHOTO_FROM_WB column exists and images are enabled
+        has_photo_column = "PHOTO_FROM_WB" in column_map and include_images
+        if "PHOTO_FROM_WB" in column_map:
+            if include_images:
+                st.info("🖼️ Найдена колонка PHOTO_FROM_WB - будут загружены изображения товаров")
+            else:
+                st.info("📷 Найдена колонка PHOTO_FROM_WB - обновление изображений отключено (ячейки останутся пустыми)")
         
         # Process data starting from row 9
         data_start_row = 9
@@ -678,13 +682,14 @@ def update_analytic_report(file_path: str, wb_sku_data: Dict[str, Dict]) -> Tupl
                             st.text(f"• {error}")
         # Если нет временных файлов, не показываем ничего (убираем лишний лог)
 
-def process_analytic_report(db_conn, file_path: str) -> Tuple[bool, str, Dict]:
+def process_analytic_report(db_conn, file_path: str, include_images: bool = False) -> Tuple[bool, str, Dict]:
     """
     Main function to process the entire analytic report.
     
     Args:
         db_conn: Database connection
         file_path: Path to the Excel file
+        include_images: Whether to download and insert product images from WB
         
     Returns:
         Tuple of (success, error_message, statistics_dict)
@@ -737,7 +742,7 @@ def process_analytic_report(db_conn, file_path: str) -> Tuple[bool, str, Dict]:
         }
     
     # Update the file
-    success, error_msg = update_analytic_report(file_path, wb_sku_data)
+    success, error_msg = update_analytic_report(file_path, wb_sku_data, include_images)
     
     if success:
         stats = {
