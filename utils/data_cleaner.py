@@ -205,7 +205,7 @@ def apply_data_cleaning(
             cleaned_df[source_col] = cleaned_series
             all_issues.extend(issues)
             
-        elif sql_type.upper() == 'DOUBLE':
+        elif sql_type.upper() in ['DOUBLE', 'NUMERIC']:  # Handle both DOUBLE and NUMERIC
             cleaned_series, issues = clean_double_field(
                 cleaned_df[source_col], 
                 source_col, 
@@ -277,14 +277,14 @@ def validate_required_fields(
     schema_columns_info: List[Tuple[str, str, str, str]]
 ) -> List[Dict[str, Any]]:
     """
-    Validate that required fields are present and not empty.
+    Validate that required fields are present. Empty columns are allowed.
     
     Args:
         df: The DataFrame to validate
         schema_columns_info: List of (target_col, sql_type, source_col, notes)
     
     Returns:
-        List of validation issues
+        List of validation issues (only for missing columns)
     """
     validation_issues = []
     
@@ -297,13 +297,7 @@ def validate_required_fields(
             })
             continue
         
-        # Check for completely empty columns
-        non_null_count = df[source_col].notna().sum()
-        if non_null_count == 0:
-            validation_issues.append({
-                'type': 'empty_column',
-                'field': source_col,
-                'message': f"Column '{source_col}' is completely empty"
-            })
+        # Removed check for completely empty columns - empty columns are now allowed
+        # This allows importing data where some optional fields might be completely empty
     
     return validation_issues 

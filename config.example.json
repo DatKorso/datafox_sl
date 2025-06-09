@@ -5,6 +5,9 @@
     "oz_orders_csv": "data/ozon/oz_orders.csv",
     "oz_prices_xlsx": "data/ozon/oz_prices.xlsx",
     "oz_products_csv": "data/ozon/oz_products.csv",
+    "oz_category_products_folder": "data/ozon/category_products/",
+    "oz_video_products_folder": "data/ozon/video_products/",
+    "oz_video_cover_products_folder": "data/ozon/video_cover_products/",
     "wb_prices_xlsx": "data/wb/wb_prices.xlsx", 
     "wb_products_dir": "data/wb/products/",
     "analytic_report_xlsx": "data/custom_reports/analytic_report.xlsx"
@@ -18,5 +21,8 @@
     "debug_mode": false,
     "auto_backup": true,
     "max_file_size_mb": 100
+  },
+  "data_filters": {
+    "oz_category_products_brands": "Shuzzi"
   }
 } 

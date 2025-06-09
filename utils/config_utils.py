@@ -146,6 +146,20 @@ def set_report_path(report_key: str, path: str) -> None:
     """
     update_config_value("report_paths", path, sub_key=report_key)
 
+def get_data_filter(filter_key: str) -> str:
+    """
+    Returns the configured filter value for a specific filter key (e.g., 'oz_category_products_brands').
+    Returns an empty string if the filter_key is not found or filter is not set.
+    """
+    return get_config_value("data_filters", sub_key=filter_key, default="")
+
+def set_data_filter(filter_key: str, filter_value: str) -> None:
+    """
+    Sets and saves the filter value for a specific filter key in the configuration.
+    For example: filter_key='oz_category_products_brands', filter_value='Shuzzi;Nike;Adidas'
+    """
+    update_config_value("data_filters", filter_value, sub_key=filter_key)
+
 if __name__ == '__main__':
     # Example usage and basic test for configuration utilities
     print("--- Testing config_utils.py ---")

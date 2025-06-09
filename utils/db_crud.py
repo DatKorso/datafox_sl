@@ -6,6 +6,7 @@ import pandas as pd
 # Import from other new utility modules
 from .db_schema import get_table_schema_definition, get_table_columns_from_schema, get_defined_table_names
 from .config_utils import get_db_path # For get_db_stats
+from . import config_utils # For brand filtering
 from .data_cleaner import apply_data_cleaning, display_cleaning_report, validate_required_fields
 
 # --- Data Import Functions ---
@@ -62,6 +63,13 @@ def import_data_from_dataframe(
     # Display cleaning report
     display_cleaning_report(cleaning_issues, table_name)
 
+    # 0.7. Apply brand filter for oz_category_products
+    cleaned_df = apply_brand_filter(cleaned_df, table_name)
+    
+    # Check if any data remains after filtering
+    if cleaned_df.empty:
+        return False, 0, f"No data remains after applying brand filter for table '{table_name}'. Check your brand filter settings."
+
     # 1. Pre-Update Action
     pre_update_sql = table_schema_def.get("pre_update_action")
     if pre_update_sql:
@@ -107,7 +115,8 @@ def import_data_from_dataframe(
                     except Exception as e_conv:
                         st.warning(f"Could not convert column {target_col} to integer for table {table_name}. Error: {e_conv}. Leaving as is.")
             else:
-                return False, 0, f"Source column '{source_col}' defined in schema not found in input data for table '{table_name}'."
+                # Column is missing in input data - create it as NULL column
+                df_to_import[target_col] = pd.NA
     
         for target_col, _, _, _ in schema_columns_info:
             if target_col not in df_to_import.columns:
@@ -327,4 +336,70 @@ def get_all_db_tables(con: duckdb.DuckDBPyConnection) -> list[str]:
         msg = f"Error fetching list of all database tables: {e}"
         print(msg)
         if callable(st.error): st.error(msg)
-        return [] 
+        return []
+
+def apply_brand_filter(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+    """
+    Применяет фильтр по брендам для таблицы oz_category_products.
+    
+    Args:
+        df: DataFrame для фильтрации
+        table_name: Название таблицы
+    
+    Returns:
+        Отфильтрованный DataFrame
+    """
+    # Применяем фильтр только для таблицы oz_category_products
+    if table_name != "oz_category_products":
+        return df
+    
+    # Получаем список брендов из настроек
+    brands_filter = config_utils.get_data_filter("oz_category_products_brands")
+    
+    if not brands_filter or brands_filter.strip() == "":
+        st.info("🔍 Фильтр брендов не установлен - загружаются все товары")
+        return df
+    
+    # Разбираем список брендов
+    allowed_brands = [brand.strip() for brand in brands_filter.split(";") if brand.strip()]
+    
+    if not allowed_brands:
+        st.info("🔍 Фильтр брендов пустой - загружаются все товары")
+        return df
+    
+    # Ищем колонку с брендом
+    brand_columns = [col for col in df.columns if 'бренд' in col.lower() or 'brand' in col.lower()]
+    
+    if not brand_columns:
+        st.warning("⚠️ Колонка с брендом не найдена - фильтр не применен")
+        return df
+    
+    brand_column = brand_columns[0]  # Берем первую найденную колонку
+    
+    # Применяем фильтр
+    original_count = len(df)
+    
+    # Создаем маску для фильтрации (регистронезависимый поиск)
+    mask = df[brand_column].astype(str).str.lower().isin([brand.lower() for brand in allowed_brands])
+    filtered_df = df[mask].copy()
+    
+    filtered_count = len(filtered_df)
+    excluded_count = original_count - filtered_count
+    
+    # Отображаем результаты фильтрации
+    if excluded_count > 0:
+        st.success(f"🎯 Фильтр брендов применен: {original_count} → {filtered_count} записей")
+        st.info(f"📋 Разрешенные бренды: {', '.join(allowed_brands)}")
+        st.warning(f"🚫 Исключено записей: {excluded_count}")
+        
+        # Показываем статистику по брендам в исходных данных
+        if not df[brand_column].isna().all():
+            brand_stats = df[brand_column].value_counts().head(10)
+            st.info("📊 Статистика брендов в исходных данных (топ-10):")
+            for brand, count in brand_stats.items():
+                status = "✅" if str(brand).lower() in [b.lower() for b in allowed_brands] else "❌"
+                st.write(f"  {status} **{brand}**: {count} товаров")
+    else:
+        st.info(f"🎯 Все {original_count} записей соответствуют фильтру брендов")
+    
+    return filtered_df 

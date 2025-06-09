@@ -51,6 +51,110 @@ HARDCODED_SCHEMA = {
         ],
         "pre_update_action": "DELETE FROM oz_barcodes;"
     },
+    "oz_category_products": {
+        "description": "Продукты по категориям Ozon (импорт шаблонов)",
+        "file_type": "folder_xlsx",
+        "read_params": {'sheet_name': "Шаблон", 'header': 1, 'skip_rows_after_header': 2},
+        "config_report_key": "oz_category_products_folder",
+        "columns": [
+            {'target_col_name': 'oz_vendor_code', 'sql_type': 'VARCHAR', 'source_col_name': 'Артикул*', 'notes': None},
+            {'target_col_name': 'product_name', 'sql_type': 'VARCHAR', 'source_col_name': 'Название товара', 'notes': None},
+            {'target_col_name': 'oz_actual_price', 'sql_type': 'NUMERIC', 'source_col_name': 'Цена, руб.*', 'notes': None},
+            {'target_col_name': 'oz_price_before_discount', 'sql_type': 'NUMERIC', 'source_col_name': 'Цена до скидки, руб.', 'notes': None},
+            {'target_col_name': 'vat_percent', 'sql_type': 'INTEGER', 'source_col_name': 'НДС, %*', 'notes': None},
+            {'target_col_name': 'installment', 'sql_type': 'VARCHAR', 'source_col_name': 'Рассрочка', 'notes': None},
+            {'target_col_name': 'review_points', 'sql_type': 'INTEGER', 'source_col_name': 'Баллы за отзывы', 'notes': None},
+            {'target_col_name': 'oz_sku', 'sql_type': 'VARCHAR', 'source_col_name': 'SKU', 'notes': None},
+            {'target_col_name': 'barcode', 'sql_type': 'VARCHAR', 'source_col_name': 'Штрихкод (Серийный номер / EAN)', 'notes': None},
+            {'target_col_name': 'package_weight_g', 'sql_type': 'INTEGER', 'source_col_name': 'Вес в упаковке, г*', 'notes': None},
+            {'target_col_name': 'package_width_mm', 'sql_type': 'INTEGER', 'source_col_name': 'Ширина упаковки, мм*', 'notes': None},
+            {'target_col_name': 'package_height_mm', 'sql_type': 'INTEGER', 'source_col_name': 'Высота упаковки, мм*', 'notes': None},
+            {'target_col_name': 'package_length_mm', 'sql_type': 'INTEGER', 'source_col_name': 'Длина упаковки, мм*', 'notes': None},
+            {'target_col_name': 'main_photo_url', 'sql_type': 'VARCHAR', 'source_col_name': 'Ссылка на главное фото*', 'notes': None},
+            {'target_col_name': 'additional_photos_urls', 'sql_type': 'TEXT', 'source_col_name': 'Ссылки на дополнительные фото', 'notes': None},
+            {'target_col_name': 'photo_360_urls', 'sql_type': 'TEXT', 'source_col_name': 'Ссылки на фото 360', 'notes': None},
+            {'target_col_name': 'photo_article', 'sql_type': 'VARCHAR', 'source_col_name': 'Артикул фото', 'notes': None},
+            {'target_col_name': 'oz_brand', 'sql_type': 'VARCHAR', 'source_col_name': 'Бренд в одежде и обуви*', 'notes': None},
+            {'target_col_name': 'merge_on_card', 'sql_type': 'VARCHAR', 'source_col_name': 'Объединить на одной карточке*', 'notes': None},
+            {'target_col_name': 'color', 'sql_type': 'VARCHAR', 'source_col_name': 'Цвет товара*', 'notes': None},
+            {'target_col_name': 'russian_size', 'sql_type': 'VARCHAR', 'source_col_name': 'Российский размер*', 'notes': None},
+            {'target_col_name': 'color_name', 'sql_type': 'VARCHAR', 'source_col_name': 'Название цвета', 'notes': None},
+            {'target_col_name': 'manufacturer_size', 'sql_type': 'VARCHAR', 'source_col_name': 'Размер производителя', 'notes': None},
+            {'target_col_name': 'type', 'sql_type': 'VARCHAR', 'source_col_name': 'Тип*', 'notes': None},
+            {'target_col_name': 'gender', 'sql_type': 'VARCHAR', 'source_col_name': 'Пол*', 'notes': None},
+            {'target_col_name': 'season', 'sql_type': 'VARCHAR', 'source_col_name': 'Сезон', 'notes': None},
+            {'target_col_name': 'is_18plus', 'sql_type': 'VARCHAR', 'source_col_name': 'Признак 18+', 'notes': None},
+            {'target_col_name': 'group_name', 'sql_type': 'VARCHAR', 'source_col_name': 'Название группы', 'notes': None},
+            {'target_col_name': 'hashtags', 'sql_type': 'TEXT', 'source_col_name': '#Хештеги', 'notes': None},
+            {'target_col_name': 'annotation', 'sql_type': 'TEXT', 'source_col_name': 'Аннотация', 'notes': None},
+            {'target_col_name': 'rich_content_json', 'sql_type': 'TEXT', 'source_col_name': 'Rich-контент JSON', 'notes': None},
+            {'target_col_name': 'keywords', 'sql_type': 'TEXT', 'source_col_name': 'Ключевые слова', 'notes': None},
+            {'target_col_name': 'country_of_origin', 'sql_type': 'VARCHAR', 'source_col_name': 'Страна-изготовитель', 'notes': None},
+            {'target_col_name': 'material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал', 'notes': None},
+            {'target_col_name': 'upper_material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал верха', 'notes': None},
+            {'target_col_name': 'lining_material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал подкладки обуви', 'notes': None},
+            {'target_col_name': 'insole_material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал стельки', 'notes': None},
+            {'target_col_name': 'outsole_material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал подошвы обуви', 'notes': None},
+            {'target_col_name': 'collection', 'sql_type': 'VARCHAR', 'source_col_name': 'Коллекция', 'notes': None},
+            {'target_col_name': 'style', 'sql_type': 'VARCHAR', 'source_col_name': 'Стиль', 'notes': None},
+            {'target_col_name': 'temperature_mode', 'sql_type': 'VARCHAR', 'source_col_name': 'Температурный режим', 'notes': None},
+            {'target_col_name': 'foot_length_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Длина стопы, см', 'notes': None},
+            {'target_col_name': 'insole_length_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Длина стельки, см', 'notes': None},
+            {'target_col_name': 'fullness', 'sql_type': 'VARCHAR', 'source_col_name': 'Полнота', 'notes': None},
+            {'target_col_name': 'heel_height_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Высота каблука, см', 'notes': None},
+            {'target_col_name': 'sole_height_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Высота подошвы, см', 'notes': None},
+            {'target_col_name': 'bootleg_height_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Высота голенища, см', 'notes': None},
+            {'target_col_name': 'size_info', 'sql_type': 'TEXT', 'source_col_name': 'Информация о размерах', 'notes': None},
+            {'target_col_name': 'fastener_type', 'sql_type': 'VARCHAR', 'source_col_name': 'Вид застёжки', 'notes': None},
+            {'target_col_name': 'heel_type', 'sql_type': 'VARCHAR', 'source_col_name': 'Вид каблука', 'notes': None},
+            {'target_col_name': 'model_features', 'sql_type': 'TEXT', 'source_col_name': 'Особенности модели', 'notes': None},
+            {'target_col_name': 'decorative_elements', 'sql_type': 'TEXT', 'source_col_name': 'Декоративные элементы', 'notes': None},
+            {'target_col_name': 'fit', 'sql_type': 'VARCHAR', 'source_col_name': 'Посадка', 'notes': None},
+            {'target_col_name': 'size_table_json', 'sql_type': 'TEXT', 'source_col_name': 'Таблица размеров JSON', 'notes': None},
+            {'target_col_name': 'warranty_period', 'sql_type': 'VARCHAR', 'source_col_name': 'Гарантийный срок', 'notes': None},
+            {'target_col_name': 'sport_purpose', 'sql_type': 'VARCHAR', 'source_col_name': 'Спортивное назначение', 'notes': None},
+            {'target_col_name': 'orthopedic', 'sql_type': 'VARCHAR', 'source_col_name': 'Ортопедический', 'notes': None},
+            {'target_col_name': 'waterproof', 'sql_type': 'VARCHAR', 'source_col_name': 'Непромокаемые', 'notes': None},
+            {'target_col_name': 'brand_country', 'sql_type': 'VARCHAR', 'source_col_name': 'Страна бренда', 'notes': None},
+            {'target_col_name': 'pronation_type', 'sql_type': 'VARCHAR', 'source_col_name': 'Тип пронации', 'notes': None},
+            {'target_col_name': 'membrane_material_type', 'sql_type': 'VARCHAR', 'source_col_name': 'Тип мембранного материала', 'notes': None},
+            {'target_col_name': 'target_audience', 'sql_type': 'VARCHAR', 'source_col_name': 'Целевая аудитория', 'notes': None},
+            {'target_col_name': 'package_count', 'sql_type': 'INTEGER', 'source_col_name': 'Количество заводских упаковок', 'notes': None},
+            {'target_col_name': 'tnved_codes', 'sql_type': 'VARCHAR', 'source_col_name': 'ТН ВЭД коды ЕАЭС', 'notes': None},
+            {'target_col_name': 'platform_height_cm', 'sql_type': 'NUMERIC', 'source_col_name': 'Высота платформы, см', 'notes': None},
+            {'target_col_name': 'boots_model', 'sql_type': 'VARCHAR', 'source_col_name': 'Модель ботинок', 'notes': None},
+            {'target_col_name': 'shoes_model', 'sql_type': 'VARCHAR', 'source_col_name': 'Модель туфель', 'notes': None},
+            {'target_col_name': 'ballet_flats_model', 'sql_type': 'VARCHAR', 'source_col_name': 'Модель балеток', 'notes': None},
+            {'target_col_name': 'shoes_in_pack_count', 'sql_type': 'INTEGER', 'source_col_name': 'Количество пар обуви в упаковке', 'notes': None},
+            {'target_col_name': 'error', 'sql_type': 'TEXT', 'source_col_name': 'Ошибка', 'notes': None},
+            {'target_col_name': 'warning', 'sql_type': 'TEXT', 'source_col_name': 'Предупреждение', 'notes': None}
+        ],
+        "pre_update_action": "DELETE FROM oz_category_products;"
+    },
+    "oz_video_products": {
+        "description": "Видео продукты Ozon",
+        "file_type": "folder_xlsx",
+        "read_params": {'sheet_name': "Озон.Видео", 'header': 1, 'skip_rows_after_header': 2},
+        "config_report_key": "oz_video_products_folder",
+        "columns": [
+            {'target_col_name': 'oz_vendor_code', 'sql_type': 'VARCHAR', 'source_col_name': 'Артикул*', 'notes': None},
+            {'target_col_name': 'video_name', 'sql_type': 'VARCHAR', 'source_col_name': 'Озон.Видео: название', 'notes': None},
+            {'target_col_name': 'video_link', 'sql_type': 'TEXT', 'source_col_name': 'Озон.Видео: ссылка', 'notes': None},
+            {'target_col_name': 'products_on_video', 'sql_type': 'TEXT', 'source_col_name': 'Озон.Видео: товары на видео', 'notes': None}
+        ],
+        "pre_update_action": "DELETE FROM oz_video_products;"
+    },
+    "oz_video_cover_products": {
+        "description": "Видеообложки продуктов Ozon",
+        "file_type": "folder_xlsx",
+        "read_params": {'sheet_name': "Озон.Видеообложка", 'header': 1, 'skip_rows_after_header': 2},
+        "config_report_key": "oz_video_cover_products_folder",
+        "columns": [
+            {'target_col_name': 'oz_vendor_code', 'sql_type': 'VARCHAR', 'source_col_name': 'Артикул*', 'notes': None},
+            {'target_col_name': 'video_cover_link', 'sql_type': 'TEXT', 'source_col_name': 'Озон.Видеообложка: ссылка', 'notes': None}
+        ],
+        "pre_update_action": "DELETE FROM oz_video_cover_products;"
+    },
     "wb_products": {
         "description": "Товары Wildberries",
         "file_type": "folder_xlsx", # Special type for import page: folder of xlsx
@@ -167,6 +271,11 @@ def create_tables_from_schema(con: duckdb.DuckDBPyConnection) -> bool:
                 msg = f"Warning: No columns defined for table '{table_name}' in HARDCODED_SCHEMA. Skipping creation."
                 print(msg)
                 if callable(st.warning): st.warning(msg) # Show in UI if possible
+                continue
+
+            # Skip dynamic schema tables - they are created during import
+            if columns_data == "DYNAMIC":
+                print(f"Info: Table '{table_name}' uses dynamic schema. Will be created during import.")
                 continue
 
             cols_definitions = []

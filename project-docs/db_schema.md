@@ -61,6 +61,107 @@
     | `oz_product_id`    | `INTEGER`  | ?   | `oz_products(oz_product_id)`   | Да   | Ozon ID товара                               |
     | `oz_barcode`       | `VARCHAR`  | ?   |                                | Да   | Штрихкод                                     |
 
+### `oz_category_products` (Продукты по категориям Ozon)
+
+*   **Описание:** Содержит детальную информацию о товарах Ozon, включая характеристики для обуви и одежды.
+*   **Источник:** XLSX файлы, лист "Шаблон", строка заголовка 2, данные начинаются со строки 4
+*   **Колонки:**
+    | Название Поля               | Тип Данных | PK | FK | NULL | Описание                                    |
+    |-----------------------------|------------|----|----|------|---------------------------------------------|
+    | `oz_vendor_code`            | `VARCHAR`  |    |    | Да   | Артикул товара                              |
+    | `product_name`              | `VARCHAR`  |    |    | Да   | Название товара                             |
+    | `oz_actual_price`           | `NUMERIC`  |    |    | Да   | Цена в рублях                               |
+    | `oz_price_before_discount`  | `NUMERIC`  |    |    | Да   | Цена до скидки в рублях                     |
+    | `vat_percent`               | `INTEGER`  |    |    | Да   | НДС в процентах                             |
+    | `installment`               | `VARCHAR`  |    |    | Да   | Рассрочка                                   |
+    | `review_points`             | `INTEGER`  |    |    | Да   | Баллы за отзывы                             |
+    | `oz_sku`                    | `VARCHAR`  |    |    | Да   | SKU товара                                  |
+    | `barcode`                   | `VARCHAR`  |    |    | Да   | Штрихкод                                    |
+    | `package_weight_g`          | `INTEGER`  |    |    | Да   | Вес упаковки в граммах                      |
+    | `package_width_mm`          | `INTEGER`  |    |    | Да   | Ширина упаковки в мм                        |
+    | `package_height_mm`         | `INTEGER`  |    |    | Да   | Высота упаковки в мм                        |
+    | `package_length_mm`         | `INTEGER`  |    |    | Да   | Длина упаковки в мм                         |
+    | `main_photo_url`            | `VARCHAR`  |    |    | Да   | Ссылка на главное фото                      |
+    | `additional_photos_urls`    | `TEXT`     |    |    | Да   | Ссылки на дополнительные фото               |
+    | `photo_360_urls`            | `TEXT`     |    |    | Да   | Ссылки на фото 360                          |
+    | `photo_article`             | `VARCHAR`  |    |    | Да   | Артикул фото                                |
+    | `oz_brand`                  | `VARCHAR`  |    |    | Да   | Бренд в одежде и обуви                      |
+    | `merge_on_card`             | `VARCHAR`  |    |    | Да   | Объединить на одной карточке                |
+    | `color`                     | `VARCHAR`  |    |    | Да   | Цвет товара                                 |
+    | `russian_size`              | `VARCHAR`  |    |    | Да   | Российский размер                           |
+    | `color_name`                | `VARCHAR`  |    |    | Да   | Название цвета                              |
+    | `manufacturer_size`         | `VARCHAR`  |    |    | Да   | Размер производителя                        |
+    | `type`                      | `VARCHAR`  |    |    | Да   | Тип товара                                  |
+    | `gender`                    | `VARCHAR`  |    |    | Да   | Пол                                         |
+    | `season`                    | `VARCHAR`  |    |    | Да   | Сезон                                       |
+    | `is_18plus`                 | `VARCHAR`  |    |    | Да   | Признак 18+                                 |
+    | `group_name`                | `VARCHAR`  |    |    | Да   | Название группы                             |
+    | `hashtags`                  | `TEXT`     |    |    | Да   | Хештеги                                     |
+    | `annotation`                | `TEXT`     |    |    | Да   | Аннотация                                   |
+    | `rich_content_json`         | `TEXT`     |    |    | Да   | Rich-контент JSON                           |
+    | `keywords`                  | `TEXT`     |    |    | Да   | Ключевые слова                              |
+    | `country_of_origin`         | `VARCHAR`  |    |    | Да   | Страна-изготовитель                         |
+    | `material`                  | `VARCHAR`  |    |    | Да   | Материал                                    |
+    | `upper_material`            | `VARCHAR`  |    |    | Да   | Материал верха                              |
+    | `lining_material`           | `VARCHAR`  |    |    | Да   | Материал подкладки обуви                    |
+    | `insole_material`           | `VARCHAR`  |    |    | Да   | Материал стельки                            |
+    | `outsole_material`          | `VARCHAR`  |    |    | Да   | Материал подошвы обуви                      |
+    | `collection`                | `VARCHAR`  |    |    | Да   | Коллекция                                   |
+    | `style`                     | `VARCHAR`  |    |    | Да   | Стиль                                       |
+    | `temperature_mode`          | `VARCHAR`  |    |    | Да   | Температурный режим                         |
+    | `foot_length_cm`            | `NUMERIC`  |    |    | Да   | Длина стопы в см                            |
+    | `insole_length_cm`          | `NUMERIC`  |    |    | Да   | Длина стельки в см                          |
+    | `fullness`                  | `VARCHAR`  |    |    | Да   | Полнота                                     |
+    | `heel_height_cm`            | `NUMERIC`  |    |    | Да   | Высота каблука в см                         |
+    | `sole_height_cm`            | `NUMERIC`  |    |    | Да   | Высота подошвы в см                         |
+    | `bootleg_height_cm`         | `NUMERIC`  |    |    | Да   | Высота голенища в см                        |
+    | `size_info`                 | `TEXT`     |    |    | Да   | Информация о размерах                       |
+    | `fastener_type`             | `VARCHAR`  |    |    | Да   | Вид застёжки                                |
+    | `heel_type`                 | `VARCHAR`  |    |    | Да   | Вид каблука                                 |
+    | `model_features`            | `TEXT`     |    |    | Да   | Особенности модели                          |
+    | `decorative_elements`       | `TEXT`     |    |    | Да   | Декоративные элементы                       |
+    | `fit`                       | `VARCHAR`  |    |    | Да   | Посадка                                     |
+    | `size_table_json`           | `TEXT`     |    |    | Да   | Таблица размеров JSON                       |
+    | `warranty_period`           | `VARCHAR`  |    |    | Да   | Гарантийный срок                            |
+    | `sport_purpose`             | `VARCHAR`  |    |    | Да   | Спортивное назначение                       |
+    | `orthopedic`                | `VARCHAR`  |    |    | Да   | Ортопедический                              |
+    | `waterproof`                | `VARCHAR`  |    |    | Да   | Непромокаемые                               |
+    | `brand_country`             | `VARCHAR`  |    |    | Да   | Страна бренда                               |
+    | `pronation_type`            | `VARCHAR`  |    |    | Да   | Тип пронации                                |
+    | `membrane_material_type`    | `VARCHAR`  |    |    | Да   | Тип мембранного материала                   |
+    | `target_audience`           | `VARCHAR`  |    |    | Да   | Целевая аудитория                           |
+    | `package_count`             | `INTEGER`  |    |    | Да   | Количество заводских упаковок               |
+    | `tnved_codes`               | `VARCHAR`  |    |    | Да   | ТН ВЭД коды ЕАЭС                            |
+    | `platform_height_cm`        | `NUMERIC`  |    |    | Да   | Высота платформы в см                       |
+    | `boots_model`               | `VARCHAR`  |    |    | Да   | Модель ботинок                              |
+    | `shoes_model`               | `VARCHAR`  |    |    | Да   | Модель туфель                               |
+    | `ballet_flats_model`        | `VARCHAR`  |    |    | Да   | Модель балеток                              |
+    | `shoes_in_pack_count`       | `INTEGER`  |    |    | Да   | Количество пар обуви в упаковке             |
+    | `error`                     | `TEXT`     |    |    | Да   | Ошибка                                      |
+    | `warning`                   | `TEXT`     |    |    | Да   | Предупреждение                              |
+
+### `oz_video_products` (Видео продукты Ozon)
+
+*   **Описание:** Содержит информацию о видеоматериалах, связанных с товарами Ozon.
+*   **Источник:** XLSX файлы, лист "Озон.Видео", строка заголовка 2, данные начинаются со строки 4
+*   **Колонки:**
+    | Название Поля       | Тип Данных | PK | FK | NULL | Описание                        |
+    |---------------------|------------|----|----|------|---------------------------------|
+    | `oz_vendor_code`    | `VARCHAR`  |    |    | Да   | Артикул товара                  |
+    | `video_name`        | `VARCHAR`  |    |    | Да   | Название видео                  |
+    | `video_link`        | `TEXT`     |    |    | Да   | Ссылка на видео                 |
+    | `products_on_video` | `TEXT`     |    |    | Да   | Товары на видео                 |
+
+### `oz_video_cover_products` (Видеообложки продуктов Ozon)
+
+*   **Описание:** Содержит информацию о видеообложках товаров Ozon.
+*   **Источник:** XLSX файлы, лист "Озон.Видеообложка", строка заголовка 2, данные начинаются со строки 4
+*   **Колонки:**
+    | Название Поля       | Тип Данных | PK | FK | NULL | Описание                        |
+    |---------------------|------------|----|----|------|---------------------------------|
+    | `oz_vendor_code`    | `VARCHAR`  |    |    | Да   | Артикул товара                  |
+    | `video_cover_link`  | `TEXT`     |    |    | Да   | Ссылка на видеообложку          |
+
 ### `wb_products` (Товары Wildberries)
 
 *   **Описание:** Содержит информацию о товарах на платформе Wildberries.
