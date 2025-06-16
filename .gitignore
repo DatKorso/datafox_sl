@@ -198,6 +198,12 @@ config.yml
 logs/
 *.log.*
 
+# Auto-update system files
+.skip_update_today
+backup_temp_*
+datafox_backup_*
+temp_datafox_update/
+
 # Temporary files
 temp_*
 tmp_*
