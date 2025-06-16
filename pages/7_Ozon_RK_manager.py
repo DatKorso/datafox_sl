@@ -3,8 +3,8 @@ Streamlit page for Ozon advertising campaign management.
 
 This page allows users to:
 - Input Wildberries SKUs and find linked Ozon SKUs via common barcodes
-- View stock levels and order statistics for found Ozon SKUs
-- Select suitable Ozon SKUs for advertising campaigns based on order volume and stock
+- View comprehensive product data including vendor codes, Punta reference data, total stock/orders
+- Select suitable Ozon SKUs for advertising campaigns based on comprehensive criteria
 """
 import streamlit as st
 from utils.db_connection import connect_db
@@ -29,19 +29,310 @@ def get_connection():
 
 conn = get_connection()
 
+# --- New Helper Functions ---
+
+def convert_material_to_short(material: str) -> str:
+    """
+    Converts material description to short format according to business rules.
+    
+    Args:
+        material: Original material description
+        
+    Returns:
+        Shortened material code
+    """
+    if not material or (hasattr(pd, 'isna') and pd.isna(material)):
+        return ""
+    
+    material_lower = str(material).lower().strip()
+    
+    if material_lower.startswith('н'):
+        return "НК"
+    elif material_lower.startswith('и'):
+        return "ИК"
+    elif material_lower.startswith('т'):
+        return "Т"
+    else:
+        return str(material)
+
+def get_ozon_product_details(db_conn, oz_sku_list: list[str]) -> pd.DataFrame:
+    """
+    Gets detailed Ozon product information including vendor codes and prices.
+    
+    Args:
+        db_conn: Database connection
+        oz_sku_list: List of Ozon SKUs
+        
+    Returns:
+        DataFrame with oz_sku, oz_vendor_code, oz_actual_price, oz_fbo_stock
+    """
+    if not oz_sku_list:
+        return pd.DataFrame()
+    
+    try:
+        query = f"""
+        SELECT 
+            oz_sku,
+            oz_vendor_code,
+            COALESCE(oz_actual_price, 0) as oz_actual_price,
+            COALESCE(oz_fbo_stock, 0) as oz_fbo_stock
+        FROM oz_products 
+        WHERE oz_sku IN ({', '.join(['?'] * len(oz_sku_list))})
+        """
+        
+        details_df = db_conn.execute(query, oz_sku_list).fetchdf()
+        details_df['oz_sku'] = details_df['oz_sku'].astype(str)
+        return details_df
+        
+    except Exception as e:
+        st.error(f"Ошибка при получении данных Ozon продуктов: {e}")
+        return pd.DataFrame()
+
+def get_punta_data_for_rk(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
+    """
+    Gets Punta reference data for WB SKUs with specific columns for RK manager.
+    
+    Args:
+        db_conn: Database connection
+        wb_sku_list: List of WB SKUs
+        
+    Returns:
+        DataFrame with wb_sku, gender, season, material, wb_object
+    """
+    if not wb_sku_list:
+        return pd.DataFrame()
+    
+    try:
+        # Convert wb_sku_list to integers for proper matching
+        wb_skus_int = []
+        for wb_sku in wb_sku_list:
+            try:
+                wb_skus_int.append(int(wb_sku))
+            except (ValueError, TypeError):
+                continue
+        
+        if not wb_skus_int:
+            return pd.DataFrame()
+        
+        # Check which columns exist in punta_table
+        columns_query = "PRAGMA table_info(punta_table)"
+        try:
+            columns_info = db_conn.execute(columns_query).fetchdf()
+            available_columns = columns_info['name'].tolist()
+        except:
+            st.info("Таблица punta_table не найдена")
+            return pd.DataFrame()
+        
+        # Build query for available columns
+        target_columns = ['wb_sku', 'gender', 'season', 'material', 'wb_object']
+        existing_columns = [col for col in target_columns if col in available_columns]
+        
+        if len(existing_columns) <= 1:  # Only wb_sku exists
+            return pd.DataFrame()
+        
+        query = f"""
+        WITH first_occurrences AS (
+            SELECT {', '.join(f'"{col}"' for col in existing_columns)},
+                   ROW_NUMBER() OVER (PARTITION BY wb_sku ORDER BY ROWID) as rn
+            FROM punta_table 
+            WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_int))})
+        )
+        SELECT {', '.join(f'"{col}"' for col in existing_columns)}
+        FROM first_occurrences 
+        WHERE rn = 1
+        """
+        
+        punta_df = db_conn.execute(query, wb_skus_int).fetchdf()
+        punta_df['wb_sku'] = punta_df['wb_sku'].astype(str)
+        
+        # Apply material conversion if material column exists
+        if 'material' in punta_df.columns:
+            punta_df['material'] = punta_df['material'].apply(convert_material_to_short)
+        
+        # Fill missing columns with empty strings
+        for col in target_columns:
+            if col not in punta_df.columns:
+                punta_df[col] = ""
+        
+        return punta_df[target_columns]
+        
+    except Exception as e:
+        st.error(f"Ошибка при получении данных Punta: {e}")
+        return pd.DataFrame()
+
+def calculate_total_stock_by_wb_sku(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
+    """
+    Calculates total stock for each WB SKU across all linked Ozon SKUs.
+    
+    Args:
+        db_conn: Database connection
+        wb_sku_list: List of WB SKUs
+        
+    Returns:
+        DataFrame with wb_sku, total_stock_wb_sku
+    """
+    if not wb_sku_list:
+        return pd.DataFrame()
+    
+    try:
+        # Get all WB-Ozon mappings
+        wb_barcodes_df = get_normalized_wb_barcodes(db_conn, wb_skus=wb_sku_list)
+        if wb_barcodes_df.empty:
+            return pd.DataFrame()
+        
+        oz_barcodes_ids_df = get_ozon_barcodes_and_identifiers(db_conn)
+        if oz_barcodes_ids_df.empty:
+            return pd.DataFrame()
+        
+        # Prepare data for merge
+        wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
+        oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
+        
+        # Ensure barcode consistency
+        wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
+        oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
+        wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
+        oz_barcodes_ids_df['oz_sku'] = oz_barcodes_ids_df['oz_sku'].astype(str)
+        
+        # Remove empty barcodes
+        wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
+        oz_barcodes_ids_df = oz_barcodes_ids_df[oz_barcodes_ids_df['barcode'] != ''].drop_duplicates()
+        
+        # Merge to find common barcodes
+        merged_df = pd.merge(wb_barcodes_df, oz_barcodes_ids_df, on='barcode', how='inner')
+        
+        if merged_df.empty:
+            return pd.DataFrame()
+        
+        # Get stock data for found Ozon SKUs
+        oz_skus_for_query = list(merged_df['oz_sku'].unique())
+        
+        stock_query = f"""
+        SELECT 
+            oz_sku,
+            COALESCE(oz_fbo_stock, 0) as oz_fbo_stock
+        FROM oz_products 
+        WHERE oz_sku IN ({', '.join(['?'] * len(oz_skus_for_query))})
+        """
+        
+        stock_df = db_conn.execute(stock_query, oz_skus_for_query).fetchdf()
+        stock_df['oz_sku'] = stock_df['oz_sku'].astype(str)
+        
+        # Merge stock data with mappings
+        merged_with_stock_df = pd.merge(merged_df, stock_df, on='oz_sku', how='left')
+        merged_with_stock_df['oz_fbo_stock'] = merged_with_stock_df['oz_fbo_stock'].fillna(0)
+        
+        # Aggregate by wb_sku
+        total_stock_df = merged_with_stock_df.groupby('wb_sku')['oz_fbo_stock'].sum().reset_index()
+        total_stock_df.columns = ['wb_sku', 'total_stock_wb_sku']
+        
+        return total_stock_df
+        
+    except Exception as e:
+        st.error(f"Ошибка при расчете общего остатка: {e}")
+        return pd.DataFrame()
+
+def calculate_total_orders_by_wb_sku(db_conn, wb_sku_list: list[str], days_back: int = 14) -> pd.DataFrame:
+    """
+    Calculates total orders for each WB SKU across all linked Ozon SKUs for specified period.
+    
+    Args:
+        db_conn: Database connection
+        wb_sku_list: List of WB SKUs
+        days_back: Number of days to look back
+        
+    Returns:
+        DataFrame with wb_sku, total_orders_wb_sku
+    """
+    if not wb_sku_list:
+        return pd.DataFrame()
+    
+    try:
+        # Get all WB-Ozon mappings
+        wb_barcodes_df = get_normalized_wb_barcodes(db_conn, wb_skus=wb_sku_list)
+        if wb_barcodes_df.empty:
+            return pd.DataFrame()
+        
+        oz_barcodes_ids_df = get_ozon_barcodes_and_identifiers(db_conn)
+        if oz_barcodes_ids_df.empty:
+            return pd.DataFrame()
+        
+        # Prepare data for merge
+        wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
+        oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
+        
+        # Ensure barcode consistency
+        wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
+        oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
+        wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
+        oz_barcodes_ids_df['oz_sku'] = oz_barcodes_ids_df['oz_sku'].astype(str)
+        
+        # Remove empty barcodes
+        wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
+        oz_barcodes_ids_df = oz_barcodes_ids_df[oz_barcodes_ids_df['barcode'] != ''].drop_duplicates()
+        
+        # Merge to find common barcodes
+        merged_df = pd.merge(wb_barcodes_df, oz_barcodes_ids_df, on='barcode', how='inner')
+        
+        if merged_df.empty:
+            return pd.DataFrame()
+        
+        # Get order data for found Ozon SKUs
+        oz_skus_for_query = list(merged_df['oz_sku'].unique())
+        
+        # Calculate dates
+        today = datetime.now()
+        start_date = (today - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        
+        orders_query = f"""
+        SELECT 
+            oz_sku,
+            COUNT(*) as order_count
+        FROM oz_orders
+        WHERE oz_sku IN ({', '.join(['?'] * len(oz_skus_for_query))})
+            AND oz_accepted_date >= ?
+            AND order_status != 'Отменён'
+        GROUP BY oz_sku
+        """
+        
+        orders_df = db_conn.execute(orders_query, oz_skus_for_query + [start_date]).fetchdf()
+        orders_df['oz_sku'] = orders_df['oz_sku'].astype(str)
+        
+        # Merge order data with mappings
+        merged_with_orders_df = pd.merge(merged_df, orders_df, on='oz_sku', how='left')
+        merged_with_orders_df['order_count'] = merged_with_orders_df['order_count'].fillna(0)
+        
+        # Aggregate by wb_sku
+        total_orders_df = merged_with_orders_df.groupby('wb_sku')['order_count'].sum().reset_index()
+        total_orders_df.columns = ['wb_sku', 'total_orders_wb_sku']
+        
+        return total_orders_df
+        
+    except Exception as e:
+        st.error(f"Ошибка при расчете общих заказов: {e}")
+        return pd.DataFrame()
+
 # --- Helper Functions ---
 
 def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
     """
     For a list of WB SKUs, finds all linked Ozon SKUs via common barcodes
-    and enriches with stock and order data.
+    and enriches with comprehensive product data for advertising campaign selection.
     
     Returns DataFrame with columns:
     - group_num: Group number (starting from 1)
     - wb_sku: WB SKU
     - oz_sku: Linked Ozon SKU
-    - oz_fbo_stock: Stock level from oz_products
-    - oz_orders_14: Orders in last 14 days
+    - oz_vendor_code: Ozon vendor code
+    - oz_fbo_stock: Individual stock level
+    - oz_orders_14: Individual orders in last 14 days
+    - oz_actual_price: Current price in Ozon
+    - gender: Gender from Punta
+    - season: Season from Punta
+    - material: Material from Punta
+    - wb_object: Object type from Punta
+    - total_stock_wb_sku: Total stock for entire WB SKU
+    - total_orders_wb_sku: Total orders for entire WB SKU (14 days)
     """
     if not wb_sku_list:
         return pd.DataFrame()
@@ -96,46 +387,71 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     
     sku_pairs_df['group_num'] = sku_pairs_df['wb_sku'].map(group_mapping)
     
-    # Get stock data from oz_products
+    # Get comprehensive Ozon product details
     oz_skus_for_query = list(sku_pairs_df['oz_sku'].unique())
-    if oz_skus_for_query:
-        try:
-            stock_query = f"""
-            SELECT 
-                oz_sku,
-                COALESCE(oz_fbo_stock, 0) as oz_fbo_stock
-            FROM oz_products 
-            WHERE oz_sku IN ({', '.join(['?'] * len(oz_skus_for_query))})
-            """
-            stock_df = db_conn.execute(stock_query, oz_skus_for_query).fetchdf()
-            stock_df['oz_sku'] = stock_df['oz_sku'].astype(str)
-        except Exception as e:
-            st.error(f"Ошибка при получении данных об остатках: {e}")
-            stock_df = pd.DataFrame()
-    else:
-        stock_df = pd.DataFrame()
+    ozon_details_df = get_ozon_product_details(db_conn, oz_skus_for_query)
     
-    # Get order data for last 14 days
+    # Get individual orders for last 14 days
     orders_df = get_ozon_orders_14_days(db_conn, oz_skus_for_query)
     
-    # Merge all data
+    # Get Punta reference data
+    unique_wb_skus = list(sku_pairs_df['wb_sku'].unique())
+    punta_df = get_punta_data_for_rk(db_conn, unique_wb_skus)
+    
+    # Get total stock by WB SKU
+    total_stock_df = calculate_total_stock_by_wb_sku(db_conn, unique_wb_skus)
+    
+    # Get total orders by WB SKU
+    total_orders_df = calculate_total_orders_by_wb_sku(db_conn, unique_wb_skus, days_back=14)
+    
+    # Merge all data step by step
     result_df = sku_pairs_df.copy()
     
-    # Merge stock data
-    if not stock_df.empty:
-        result_df = pd.merge(result_df, stock_df, on='oz_sku', how='left')
+    # Merge Ozon product details
+    if not ozon_details_df.empty:
+        result_df = pd.merge(result_df, ozon_details_df, on='oz_sku', how='left')
     else:
+        result_df['oz_vendor_code'] = ""
+        result_df['oz_actual_price'] = 0
         result_df['oz_fbo_stock'] = 0
     
-    # Merge order data
+    # Merge individual order data
     if not orders_df.empty:
         result_df = pd.merge(result_df, orders_df, on='oz_sku', how='left')
     else:
         result_df['oz_orders_14'] = 0
     
-    # Fill NaN values
+    # Merge Punta data
+    if not punta_df.empty:
+        result_df = pd.merge(result_df, punta_df, on='wb_sku', how='left')
+    else:
+        result_df['gender'] = ""
+        result_df['season'] = ""
+        result_df['material'] = ""
+        result_df['wb_object'] = ""
+    
+    # Merge total stock data
+    if not total_stock_df.empty:
+        result_df = pd.merge(result_df, total_stock_df, on='wb_sku', how='left')
+    else:
+        result_df['total_stock_wb_sku'] = 0
+    
+    # Merge total orders data
+    if not total_orders_df.empty:
+        result_df = pd.merge(result_df, total_orders_df, on='wb_sku', how='left')
+    else:
+        result_df['total_orders_wb_sku'] = 0
+    
+    # Fill NaN values and ensure proper data types
     result_df['oz_fbo_stock'] = result_df['oz_fbo_stock'].fillna(0).astype(int)
     result_df['oz_orders_14'] = result_df['oz_orders_14'].fillna(0).astype(int)
+    result_df['oz_actual_price'] = result_df['oz_actual_price'].fillna(0).round().astype(int)  # Round price to integer
+    result_df['total_stock_wb_sku'] = result_df['total_stock_wb_sku'].fillna(0).astype(int)
+    result_df['total_orders_wb_sku'] = result_df['total_orders_wb_sku'].fillna(0).astype(int)
+    
+    # Fill string fields
+    for col in ['oz_vendor_code', 'gender', 'season', 'material', 'wb_object']:
+        result_df[col] = result_df[col].fillna("")
     
     # Sort by group number and then by orders descending
     result_df = result_df.sort_values(['group_num', 'oz_orders_14'], ascending=[True, False])
@@ -181,15 +497,16 @@ def get_ozon_orders_14_days(db_conn, oz_sku_list: list[str]) -> pd.DataFrame:
 def select_advertising_candidates(df: pd.DataFrame, min_stock: int = 20, min_candidates: int = 1, max_candidates: int = 5) -> pd.DataFrame:
     """
     Select top candidates for advertising based on order volume and stock within each group.
+    Now preserves all the comprehensive data columns including Punta reference data.
     
     Args:
-        df: DataFrame with all WB-Ozon SKU mappings
-        min_stock: Minimum required stock level
+        df: DataFrame with all WB-Ozon SKU mappings and comprehensive data
+        min_stock: Minimum required stock level (individual oz_fbo_stock)
         min_candidates: Minimum number of candidates required per group (groups with fewer are excluded)
         max_candidates: Maximum number of candidates to select PER GROUP
     
     Returns:
-        DataFrame with selected candidates from all groups that meet minimum requirements
+        DataFrame with selected candidates including all comprehensive data columns
     """
     if df.empty:
         return pd.DataFrame()
@@ -200,7 +517,7 @@ def select_advertising_candidates(df: pd.DataFrame, min_stock: int = 20, min_can
     for group_num in df['group_num'].unique():
         group_df = df[df['group_num'] == group_num].copy()
         
-        # Filter by minimum stock within this group
+        # Filter by minimum stock within this group (individual stock)
         filtered_group_df = group_df[group_df['oz_fbo_stock'] >= min_stock].copy()
         
         # Check if group meets minimum candidates requirement
@@ -273,222 +590,215 @@ st.markdown("---")
 if 'rk_search_results' not in st.session_state:
     st.session_state.rk_search_results = pd.DataFrame()
 
-# Search button
-if st.button("🔍 Найти связанные артикулы", type="primary"):
+# Search and select button
+if st.button("🎯 Найти и отобрать кандидатов для рекламы", type="primary"):
     if not wb_skus_input.strip():
         st.warning("Пожалуйста, введите артикулы WB для поиска.")
     else:
         wb_sku_list = wb_skus_input.strip().split()
         
-        with st.spinner("Поиск связанных артикулов и загрузка данных..."):
-            results_df = get_linked_ozon_skus_with_details(conn, wb_sku_list)
-            st.session_state.rk_search_results = results_df
+        with st.spinner("Поиск связанных артикулов и отбор кандидатов..."):
+            # Get all linked SKUs with comprehensive data
+            all_results_df = get_linked_ozon_skus_with_details(conn, wb_sku_list)
+            
+            if not all_results_df.empty:
+                # Apply selection criteria immediately
+                selected_df = select_advertising_candidates(
+                    all_results_df, 
+                    min_stock=min_stock_setting,
+                    min_candidates=min_candidates_setting,
+                    max_candidates=max_candidates_setting
+                )
+                st.session_state.rk_search_results = selected_df
+            else:
+                st.session_state.rk_search_results = pd.DataFrame()
 
-# Display results if available
+# Display selected candidates if available
 if not st.session_state.rk_search_results.empty:
-    results_df = st.session_state.rk_search_results
+    selected_df = st.session_state.rk_search_results
     
-    st.subheader("📊 Найденные связанные артикулы")
+    st.subheader("🎯 Отобранные кандидаты для рекламы")
     
     # Summary statistics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Групп WB SKU", results_df['group_num'].nunique())
+        st.metric("Отобрано групп", selected_df['group_num'].nunique())
     with col2:
-        st.metric("Всего Ozon SKU", len(results_df))
+        st.metric("Всего кандидатов", len(selected_df))
     with col3:
-        st.metric("Общий остаток", results_df['oz_fbo_stock'].sum())
+        # Calculate unique stock per model (avoid duplicating total_stock_wb_sku for each size)
+        unique_stock_per_model = selected_df.groupby('wb_sku')['total_stock_wb_sku'].first().sum()
+        st.metric("Общий остаток моделей", unique_stock_per_model)
     with col4:
-        st.metric("Общие заказы за 14 дней", results_df['oz_orders_14'].sum())
+        # Calculate unique orders per model (avoid duplicating total_orders_wb_sku for each size)
+        unique_orders_per_model = selected_df.groupby('wb_sku')['total_orders_wb_sku'].first().sum()
+        st.metric("Общие заказы моделей (14 дней)", unique_orders_per_model)
     
-    # Display full results table
-    st.markdown("##### Все найденные артикулы:")
-    display_df = results_df.copy()
+    # Display comprehensive candidate table
+    st.markdown("##### 🎯 Детальная информация по кандидатам:")
     
-    # Calculate aggregated values per WB SKU group
-    group_aggregates = results_df.groupby('wb_sku').agg({
-        'oz_fbo_stock': 'sum',
-        'oz_orders_14': 'sum'
-    }).rename(columns={
-        'oz_fbo_stock': 'total_stock_per_wb_sku',
-        'oz_orders_14': 'total_orders_per_wb_sku'
-    })
-    
-    # Merge aggregated values back to main dataframe
-    display_df = display_df.merge(group_aggregates, left_on='wb_sku', right_index=True, how='left')
+    display_df = selected_df.copy()
     
     # Rename columns for display
     display_df = display_df.rename(columns={
         'group_num': 'Группа',
         'wb_sku': 'WB SKU', 
         'oz_sku': 'Ozon SKU',
+        'oz_vendor_code': 'Артикул OZ',
         'oz_fbo_stock': 'Остаток',
         'oz_orders_14': 'Заказов за 14 дней',
-        'total_stock_per_wb_sku': 'Остаток общий',
-        'total_orders_per_wb_sku': 'Заказы общие'
+        'oz_actual_price': 'Цена, ₽',
+        'gender': 'Пол',
+        'season': 'Сезон',
+        'material': 'Материал',
+        'wb_object': 'Предмет',
+        'total_stock_wb_sku': 'Остаток всей модели',
+        'total_orders_wb_sku': 'Заказы всей модели (14 дней)'
     })
     
-    # Reorder columns to show aggregated data after individual data
-    display_df = display_df[['Группа', 'WB SKU', 'Ozon SKU', 'Остаток', 'Заказов за 14 дней', 'Остаток общий', 'Заказы общие']]
+    # Add ranking within each group
+    display_df['Рейтинг в группе'] = display_df.groupby('Группа').cumcount() + 1
     
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # Add margin placeholder
+    display_df['% маржи'] = "скоро"
     
-    st.markdown("---")
+    # Reorder columns for better display
+    column_order = [
+        'Группа', 'WB SKU', 'Рейтинг в группе', 
+        'Ozon SKU', 'Артикул OZ', 
+        'Остаток', 'Заказов за 14 дней', 'Цена, ₽',
+        'Пол', 'Сезон', 'Материал', 'Предмет',
+        'Остаток всей модели', 'Заказы всей модели (14 дней)', '% маржи'
+    ]
     
-    # Advertising selection section
-    st.subheader("🎯 Отбор для рекламы")
+    display_df = display_df[column_order]
     
-    col1, col2 = st.columns([2, 1])
+    # Style the dataframe to highlight by groups
+    def highlight_by_group(row):
+        if row['Рейтинг в группе'] == 1:
+            return ['background-color: #e8f5e8'] * len(row)  # Green for #1 in group
+        elif row['Рейтинг в группе'] <= 3:
+            return ['background-color: #f0f8ff'] * len(row)  # Light blue for top 3
+        else:
+            return [''] * len(row)
+    
+    styled_df = display_df.style.apply(highlight_by_group, axis=1)
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    
+    # Show applied criteria
+    st.info(f"**Применённые критерии отбора:**\n"
+            f"• Минимальный остаток: {min_stock_setting} шт (индивидуальный)\n"
+            f"• Минимум кандидатов: {min_candidates_setting} из каждой группы\n"
+            f"• Максимум кандидатов: до {max_candidates_setting} из каждой группы\n"
+            f"• Сортировка: по убыванию заказов за 14 дней внутри каждой группы")
+    
+    # Export options
+    col1, col2 = st.columns(2)
     
     with col1:
-        st.info(f"**Критерии отбора:**\n"
-                f"• Минимальный остаток: {min_stock_setting} шт\n"
-                f"• Минимум кандидатов: {min_candidates_setting} из каждой группы\n"
-                f"• Максимум кандидатов: до {max_candidates_setting} из каждой группы\n"
-                f"• Сортировка: по убыванию заказов за 14 дней внутри каждой группы\n"
-                f"• **Важно:** Группы с количеством подходящих артикулов меньше {min_candidates_setting} будут полностью исключены")
+        if st.button("📋 Копировать Ozon SKU для рекламы", use_container_width=True):
+            ozon_skus_list = selected_df['oz_sku'].tolist()
+            ozon_skus_text = ' '.join(ozon_skus_list)
+            st.code(ozon_skus_text, language="text")
+            st.success("Скопируйте Ozon SKU из поля выше для использования в рекламной системе")
     
     with col2:
-        if st.button("🚀 Отобрать кандидатов для рекламы", type="secondary"):
-            selected_df = select_advertising_candidates(
-                results_df, 
-                min_stock=min_stock_setting,
-                min_candidates=min_candidates_setting,
-                max_candidates=max_candidates_setting
-            )
+        if st.button("📊 Показать сводку по группам", use_container_width=True):
+            st.markdown("##### 📈 Сводка по группам:")
             
-            if not selected_df.empty:
-                # Calculate statistics by group
-                groups_with_candidates = selected_df['group_num'].nunique()
-                total_candidates = len(selected_df)
-                
-                st.success(f"✅ Отобрано {total_candidates} кандидатов из {groups_with_candidates} групп для рекламы")
-                
-                # Display selected candidates grouped by WB SKU
-                st.markdown("##### 🎯 Рекомендованные артикулы для рекламы:")
-                
-                selected_display_df = selected_df.copy()
-                selected_display_df = selected_display_df.rename(columns={
-                    'group_num': 'Группа',
-                    'wb_sku': 'WB SKU', 
-                    'oz_sku': 'Ozon SKU',
-                    'oz_fbo_stock': 'Остаток',
-                    'oz_orders_14': 'Заказов за 14 дней'
-                })
-                
-                # Add ranking within each group
-                selected_display_df['Рейтинг в группе'] = selected_display_df.groupby('Группа').cumcount() + 1
-                
-                # Reorder columns
-                selected_display_df = selected_display_df[['Группа', 'WB SKU', 'Рейтинг в группе', 'Ozon SKU', 'Остаток', 'Заказов за 14 дней']]
-                
-                # Style the dataframe to highlight by groups
-                def highlight_by_group(row):
-                    if row['Рейтинг в группе'] == 1:
-                        return ['background-color: #e8f5e8'] * len(row)  # Green for #1 in group
-                    elif row['Рейтинг в группе'] <= 3:
-                        return ['background-color: #f0f8ff'] * len(row)  # Light blue for top 3
-                    else:
-                        return [''] * len(row)
-                
-                styled_df = selected_display_df.style.apply(highlight_by_group, axis=1)
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                
-                # Summary by groups
-                st.markdown("##### 📈 Сводка по группам:")
-                
-                # Create group summary
-                group_summary = selected_df.groupby(['group_num', 'wb_sku']).agg({
-                    'oz_sku': 'count',
-                    'oz_fbo_stock': 'sum',
-                    'oz_orders_14': 'sum'
-                }).rename(columns={
-                    'oz_sku': 'Кандидатов',
-                    'oz_fbo_stock': 'Общий остаток',
-                    'oz_orders_14': 'Общие заказы за 14 дней'
-                }).reset_index()
-                
-                group_summary = group_summary.rename(columns={
-                    'group_num': 'Группа',
-                    'wb_sku': 'WB SKU'
-                })
-                
-                st.dataframe(group_summary, use_container_width=True, hide_index=True)
-                
-                # Overall summary for selected candidates
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Всего артикулов", len(selected_df))
-                with col2:
-                    st.metric("Общий остаток", selected_df['oz_fbo_stock'].sum())
-                with col3:
-                    st.metric("Общие заказы за 14 дней", selected_df['oz_orders_14'].sum())
-                
-                # Export option
-                if st.button("📋 Копировать Ozon SKU для рекламы"):
-                    ozon_skus_list = selected_df['oz_sku'].tolist()
-                    ozon_skus_text = ' '.join(ozon_skus_list)
-                    st.code(ozon_skus_text, language="text")
-                    st.success("Скопируйте Ozon SKU из поля выше для использования в рекламной системе")
-                    
-                    # Also show breakdown by groups
-                    st.markdown("##### 📋 Разбивка по группам:")
-                    for group_num in sorted(selected_df['group_num'].unique()):
-                        group_data = selected_df[selected_df['group_num'] == group_num]
-                        wb_sku = group_data['wb_sku'].iloc[0]
-                        group_skus = group_data['oz_sku'].tolist()
-                        st.write(f"**Группа {group_num} (WB SKU: {wb_sku}):** {' '.join(group_skus)}")
-                    
-            else:
-                st.warning(f"❌ Не найдено кандидатов, соответствующих критериям:\n"
-                          f"- Минимальный остаток: {min_stock_setting} шт\n"
-                          f"- Минимум кандидатов: {min_candidates_setting} из каждой группы\n"
-                          f"- Максимум кандидатов: до {max_candidates_setting} из каждой группы\n"
-                          f"- Возможно, в группах недостаточно артикулов с нужным остатком\n"
-                          f"- Попробуйте уменьшить минимальный остаток или минимум кандидатов")
+            # Create group summary
+            group_summary = selected_df.groupby(['group_num', 'wb_sku']).agg({
+                'oz_sku': 'count',
+                'oz_fbo_stock': 'sum',
+                'oz_orders_14': 'sum',
+                'total_stock_wb_sku': 'first',  # This is same for all rows in group
+                'total_orders_wb_sku': 'first'  # This is same for all rows in group
+            }).rename(columns={
+                'oz_sku': 'Кандидатов',
+                'oz_fbo_stock': 'Остаток отобранных',
+                'oz_orders_14': 'Заказы отобранных',
+                'total_stock_wb_sku': 'Остаток всей модели',
+                'total_orders_wb_sku': 'Заказы всей модели'
+            }).reset_index()
+            
+            group_summary = group_summary.rename(columns={
+                'group_num': 'Группа',
+                'wb_sku': 'WB SKU'
+            })
+            
+            st.dataframe(group_summary, use_container_width=True, hide_index=True)
+    
+    # Breakdown by groups
+    with st.expander("📋 Разбивка Ozon SKU по группам"):
+        for group_num in sorted(selected_df['group_num'].unique()):
+            group_data = selected_df[selected_df['group_num'] == group_num]
+            wb_sku = group_data['wb_sku'].iloc[0]
+            group_skus = group_data['oz_sku'].tolist()
+            st.write(f"**Группа {group_num} (WB SKU: {wb_sku}):** {' '.join(group_skus)}")
+
+else:
+    if 'rk_search_results' in st.session_state and st.session_state.rk_search_results is not None:
+        # Check if we tried to search but got no results
+        st.warning(f"❌ Не найдено кандидатов, соответствующих критериям:\n"
+                  f"- Минимальный остаток: {min_stock_setting} шт\n"
+                  f"- Минимум кандидатов: {min_candidates_setting} из каждой группы\n"
+                  f"- Максимум кандидатов: до {max_candidates_setting} из каждой группы\n"
+                  f"- Возможно, в группах недостаточно артикулов с нужным остатком\n"
+                  f"- Попробуйте уменьшить минимальный остаток или минимум кандидатов")
 
 # Instructions section
 with st.expander("📖 Инструкция по использованию"):
     st.markdown("""
-    ### Как использовать Ozon RK Manager:
+    ### Как использовать обновленный Ozon RK Manager:
     
     1. **Ввод данных**: Введите список WB SKU через пробел в текстовое поле
     
-    2. **Поиск связанных артикулов**: Нажмите "Найти связанные артикулы"
-       - Система найдет все Ozon SKU, связанные с WB SKU через общие штрихкоды
-       - Загрузит данные об остатках и заказах за последние 14 дней
-       - Сгруппирует результаты по WB SKU
-    
-    3. **Анализ таблицы результатов**: В таблице "Все найденные артикулы" отображаются:
-       - **Остаток** - индивидуальный остаток конкретного Ozon SKU
-       - **Заказов за 14 дней** - индивидуальное количество заказов конкретного Ozon SKU
-       - **Остаток общий** - суммарный остаток всех Ozon SKU в пределах одного WB SKU
-       - **Заказы общие** - суммарное количество заказов всех Ozon SKU в пределах одного WB SKU
-    
-    4. **Настройка критериев**: Установите параметры для отбора:
-       - **Минимальный остаток**: товары с меньшим остатком не будут рассматриваться
+    2. **Настройка критериев отбора** (справа):
+       - **Минимальный остаток**: товары с меньшим индивидуальным остатком не будут рассматриваться
        - **Минимум кандидатов**: минимальное количество подходящих артикулов в группе (если меньше - вся группа исключается)
        - **Максимум кандидатов**: максимальное количество артикулов для отбора из каждой группы
     
-    5. **Отбор для рекламы**: Нажмите "Отобрать кандидатов для рекламы"
-       - Система сначала проверит, есть ли в каждой группе минимальное количество подходящих артикулов
-       - Группы, не соответствующие минимуму, будут полностью исключены
-       - Из оставшихся групп отберет топ артикулов по количеству заказов за 14 дней
-       - Учтет только артикулы с достаточным остатком
-       - Из каждой группы (WB SKU) будет отобрано до N лучших артикулов
+    3. **Поиск и отбор**: Нажмите "🎯 Найти и отобрать кандидатов для рекламы"
+       - Система автоматически найдет все связанные Ozon SKU через общие штрихкоды
+       - Загрузит comprehensive данные: артикулы, цены, остатки, справочные данные Punta
+       - Применит критерии отбора и покажет только лучших кандидатов
     
-    6. **Использование результатов**: Скопируйте список Ozon SKU для настройки рекламы
+    4. **Анализ результатов**: В таблице "Детальная информация по кандидатам" отображаются:
+       - **Базовые данные**: Группа, WB SKU, Ozon SKU, Артикул OZ, Рейтинг в группе
+       - **Остатки и заказы**: Индивидуальные и общие по всей модели
+       - **Ценовая информация**: Текущая цена Ozon, будущая колонка "% маржи"
+       - **Справочные данные Punta**: Пол, Сезон, Материал, Предмет
+    
+    5. **Экспорт результатов**:
+       - **"Копировать Ozon SKU"**: получить список для вставки в рекламную систему
+       - **"Показать сводку по группам"**: агрегированная статистика по WB SKU
+       - **"Разбивка по группам"**: детальная разбивка Ozon SKU по группам
+    
+    ### Новые возможности и столбцы:
+    
+    #### 📊 Расширенная аналитика:
+    - **Остаток всей модели**: суммарный остаток всех размеров WB SKU в Ozon
+    - **Заказы всей модели**: суммарные заказы всех размеров за 14 дней
+    - **Артикул OZ**: оригинальный артикул поставщика в системе Ozon
+    - **Цена**: текущая цена с учетом скидки в Ozon
+    
+    #### 📚 Справочные данные Punta:
+    - **Пол**: целевая аудитория (Мальчики/Девочки/Мужской/Женский)
+    - **Сезон**: сезонность товара (Лето/Деми/Зима)
+    - **Материал**: описание материалов изделия
+    - **Предмет**: тип товара (Ботинки/Кроссовки/Сапоги и т.д.)
+    
+    #### 🎯 Улучшенная логика отбора:
+    - **Автоматический отбор**: сразу показываются только лучшие кандидаты
+    - **Цветовая индикация**: зеленый для #1 в группе, голубой для топ-3
+    - **Comprehensive view**: вся необходимая информация в одной таблице
     
     ### Логика работы:
-    - **Группировка**: Каждый WB SKU образует отдельную группу
-    - **Отбор по группам**: Из каждой группы отбираются лучшие артикулы отдельно
-    - **Приоритизация**: Артикулы ранжируются по заказам внутри своей группы
-    - **Фильтрация**: Исключаются артикулы с недостаточным остатком в каждой группе
-    - **Агрегация**: Общие остатки и заказы помогают оценить потенциал всей группы WB SKU
+    - **Группировка**: Каждый WB SKU образует отдельную группу товаров
+    - **Агрегация данных**: Автоматический расчет общих остатков и заказов по модели
+    - **Enrichment**: Обогащение справочными данными из таблицы Punta
+    - **Smart filtering**: Исключение групп с недостаточным количеством кандидатов
+    - **Ranking**: Ранжирование по продуктивности (заказы за 14 дней)
     """)
-
-# Show help if no results yet
-if st.session_state.rk_search_results.empty:
-    st.info("👆 Введите WB SKU выше и нажмите 'Найти связанные артикулы' для начала работы")
 
 # Remove the explicit conn.close() when using st.cache_resource for the connection 
