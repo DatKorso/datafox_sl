@@ -83,7 +83,7 @@ def get_category_mappings(db_conn):
         st.error(f"Ошибка при получении соответствий категорий: {e}")
         return pd.DataFrame()
 
-def add_category_mapping(db_conn, wb_category, oz_category, notes=""):
+def add_category_mapping(db_conn, wb_category, oz_category, notes="", show_messages=True):
     """Adds new category mapping."""
     try:
         # Check if mapping already exists
@@ -91,7 +91,8 @@ def add_category_mapping(db_conn, wb_category, oz_category, notes=""):
         existing = db_conn.execute(check_query, [wb_category, oz_category]).fetchone()
         
         if existing:
-            st.warning(f"Соответствие '{wb_category}' ↔ '{oz_category}' уже существует")
+            if show_messages:
+                st.warning(f"Соответствие '{wb_category}' ↔ '{oz_category}' уже существует")
             return False
         
         insert_query = """
@@ -99,10 +100,12 @@ def add_category_mapping(db_conn, wb_category, oz_category, notes=""):
         VALUES (?, ?, ?)
         """
         db_conn.execute(insert_query, [wb_category, oz_category, notes])
-        st.success(f"Добавлено соответствие: '{wb_category}' ↔ '{oz_category}'")
+        if show_messages:
+            st.success(f"Добавлено соответствие: '{wb_category}' ↔ '{oz_category}'")
         return True
     except Exception as e:
-        st.error(f"Ошибка при добавлении соответствия: {e}")
+        if show_messages:
+            st.error(f"Ошибка при добавлении соответствия: {e}")
         return False
 
 def delete_category_mapping(db_conn, mapping_id):
@@ -147,7 +150,27 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
         if search_by == "wb_sku":
             # Find linked Ozon products via barcodes
             try:
-                wb_barcodes_df = get_normalized_wb_barcodes(db_conn, wb_skus=input_skus)
+                # Get raw barcodes from WB
+                wb_raw_query = f"""
+                SELECT DISTINCT wb_sku, wb_barcodes
+                FROM wb_products 
+                WHERE wb_sku IN ({', '.join(['?'] * len(input_skus))})
+                    AND NULLIF(TRIM(wb_barcodes), '') IS NOT NULL
+                """
+                wb_raw_df = db_conn.execute(wb_raw_query, input_skus).fetchdf()
+                
+                # Normalize barcodes by splitting on semicolon
+                wb_barcodes_data = []
+                for _, row in wb_raw_df.iterrows():
+                    wb_sku = str(row['wb_sku'])
+                    barcodes_str = str(row['wb_barcodes'])
+                    # Split by semicolon and clean each barcode
+                    individual_barcodes = [b.strip() for b in barcodes_str.split(';') if b.strip()]
+                    for barcode in individual_barcodes:
+                        wb_barcodes_data.append({'wb_sku': wb_sku, 'individual_barcode_wb': barcode})
+                
+                wb_barcodes_df = pd.DataFrame(wb_barcodes_data)
+                
             except Exception as e:
                 st.error(f"Ошибка при получении штрихкодов WB: {e}")
                 return pd.DataFrame()
@@ -200,7 +223,7 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
             # and link oz_vendor_code to oz_sku using oz_products table
             oz_vendor_codes_list = linked_df['oz_vendor_code'].unique().tolist()
             oz_categories_query = f"""
-            SELECT 
+            SELECT DISTINCT
                 cp.oz_vendor_code, 
                 cp.type as oz_category,
                 p.oz_sku
@@ -221,6 +244,10 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
             result_df['oz_sku'] = result_df['oz_sku_y'].fillna(result_df['oz_sku_x'])
             result_df = result_df.drop(columns=['oz_sku_x', 'oz_sku_y'], errors='ignore')
             
+            # Remove duplicates by keeping unique combinations of wb_sku, oz_sku, oz_vendor_code
+            # This will eliminate duplicate rows caused by multiple barcodes for the same product pair
+            result_df = result_df.drop_duplicates(subset=['wb_sku', 'oz_sku', 'oz_vendor_code'], keep='first')
+            
         else:  # search_by == "oz_sku"
             # Similar logic but starting from Ozon SKUs
             oz_skus_for_query = list(set(input_skus))
@@ -234,7 +261,11 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
                 cp.type as oz_category,
                 b.oz_barcode as barcode
             FROM oz_products p
-            LEFT JOIN oz_category_products cp ON p.oz_vendor_code = cp.oz_vendor_code
+            LEFT JOIN (
+                SELECT DISTINCT oz_vendor_code, type 
+                FROM oz_category_products 
+                WHERE type IS NOT NULL
+            ) cp ON p.oz_vendor_code = cp.oz_vendor_code
             LEFT JOIN oz_barcodes b ON p.oz_product_id = b.oz_product_id
             WHERE p.oz_sku IN ({', '.join(['?'] * len(oz_skus_for_query))})
                 AND NULLIF(TRIM(b.oz_barcode), '') IS NOT NULL
@@ -247,13 +278,12 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
             
             # Get WB products with same barcodes
             wb_query = f"""
-            SELECT 
+            SELECT DISTINCT
                 p.wb_sku,
                 p.wb_category,
-                TRIM(b.barcode) AS barcode
-            FROM wb_products p,
-            UNNEST(regexp_split_to_array(COALESCE(p.wb_barcodes, ''), E'[\\s;]+')) AS b(barcode)
-            WHERE NULLIF(TRIM(b.barcode), '') IS NOT NULL
+                p.wb_barcodes AS barcode
+            FROM wb_products p
+            WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL
             """
             
             wb_data_df = db_conn.execute(wb_query).fetchdf()
@@ -273,6 +303,11 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
             
             # Join on common barcodes
             result_df = pd.merge(oz_data_df, wb_data_df, on='barcode', how='inner')
+            
+            # Remove duplicates by keeping unique combinations of wb_sku, oz_sku, oz_vendor_code
+            # This will eliminate duplicate rows caused by multiple barcodes for the same product pair
+            if not result_df.empty:
+                result_df = result_df.drop_duplicates(subset=['wb_sku', 'oz_sku', 'oz_vendor_code'], keep='first')
         
         return result_df
         
@@ -495,6 +530,13 @@ with tab1:
                                     'discrepancy_type'
                                 ]
                                 
+                                # Show summary of unique products
+                                unique_wb_skus = results_df['wb_sku'].nunique()
+                                unique_oz_skus = results_df['oz_sku'].nunique()
+                                unique_pairs = len(results_df.drop_duplicates(['wb_sku', 'oz_sku']))
+                                
+                                st.info(f"📊 Уникальных товаров: WB SKU: {unique_wb_skus}, Ozon SKU: {unique_oz_skus}, Пар товаров: {unique_pairs}")
+                                
                                 # Color-code the status column for better visibility
                                 st.dataframe(
                                     results_df[display_columns],
@@ -684,6 +726,12 @@ with tab2:
         st.subheader("Автоматические предложения")
         st.info("Система анализирует названия категорий и предлагает возможные соответствия на основе сходства текста")
         
+        # Initialize session state for suggestions
+        if 'suggestions' not in st.session_state:
+            st.session_state.suggestions = []
+        if 'suggestions_found' not in st.session_state:
+            st.session_state.suggestions_found = False
+        
         similarity_threshold = st.slider(
             "Минимальное сходство:",
             min_value=0.5,
@@ -693,56 +741,142 @@ with tab2:
             help="Чем выше значение, тем более похожими должны быть названия категорий"
         )
         
-        if st.button("🔍 Найти предложения", key="find_suggestions"):
-            with st.spinner("Анализ категорий и поиск соответствий..."):
-                suggestions = suggest_category_mappings(conn, similarity_threshold)
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("🔍 Найти предложения", key="find_suggestions"):
+                with st.spinner("Анализ категорий и поиск соответствий..."):
+                    # Get existing mappings to filter out duplicates
+                    existing_mappings = get_category_mappings(conn)
+                    existing_pairs = set()
+                    if not existing_mappings.empty:
+                        for _, row in existing_mappings.iterrows():
+                            existing_pairs.add((row['wb_category'], row['oz_category']))
+                    
+                    # Get suggestions
+                    all_suggestions = suggest_category_mappings(conn, similarity_threshold)
+                    
+                    # Filter out existing mappings
+                    filtered_suggestions = []
+                    for suggestion in all_suggestions:
+                        pair = (suggestion['wb_category'], suggestion['oz_category'])
+                        if pair not in existing_pairs:
+                            filtered_suggestions.append(suggestion)
+                    
+                    st.session_state.suggestions = filtered_suggestions
+                    st.session_state.suggestions_found = True
+                    
+                    if filtered_suggestions:
+                        st.success(f"Найдено {len(filtered_suggestions)} новых предложений")
+                        if len(all_suggestions) > len(filtered_suggestions):
+                            st.info(f"Исключено {len(all_suggestions) - len(filtered_suggestions)} уже существующих соответствий")
+                    else:
+                        if all_suggestions:
+                            st.info("Все найденные предложения уже существуют в таблице соответствий")
+                        else:
+                            st.info("Предложений не найдено. Попробуйте уменьшить порог сходства.")
+        
+        with col2:
+            if st.session_state.suggestions_found and st.button("🔄 Очистить результаты", key="clear_suggestions"):
+                st.session_state.suggestions = []
+                st.session_state.suggestions_found = False
+                st.rerun()
+        
+        # Display suggestions if found
+        if st.session_state.suggestions_found and st.session_state.suggestions:
+            suggestions = st.session_state.suggestions
+            
+            st.subheader("Найденные предложения")
+            suggestions_df = pd.DataFrame(suggestions)
+            
+            st.dataframe(
+                suggestions_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'wb_category': 'Категория WB',
+                    'oz_category': 'Категория Ozon',
+                    'similarity': st.column_config.NumberColumn(
+                        'Сходство',
+                        format="%.2f"
+                    ),
+                    'confidence': 'Уверенность'
+                }
+            )
+            
+            # Quick add options
+            st.subheader("Быстрое добавление")
+            st.info("Отметьте предложения, которые хотите добавить:")
+            
+            # Initialize selection state
+            if 'selected_suggestions_ids' not in st.session_state:
+                st.session_state.selected_suggestions_ids = set()
+            
+            selected_suggestions = []
+            high_med_suggestions = [s for s in suggestions if s['confidence'] in ['High', 'Medium']]
+            
+            if not high_med_suggestions:
+                st.warning("Нет предложений с высокой или средней уверенностью")
+            else:
+                for idx, suggestion in enumerate(high_med_suggestions):
+                    suggestion_id = f"{suggestion['wb_category']}_{suggestion['oz_category']}"
+                    
+                    col1, col2 = st.columns([1, 4])
+                    with col1:
+                        is_selected = st.checkbox(
+                            "", 
+                            key=f"suggest_checkbox_{idx}",
+                            value=suggestion_id in st.session_state.selected_suggestions_ids
+                        )
+                        
+                        if is_selected:
+                            st.session_state.selected_suggestions_ids.add(suggestion_id)
+                            selected_suggestions.append(suggestion)
+                        else:
+                            st.session_state.selected_suggestions_ids.discard(suggestion_id)
+                    
+                    with col2:
+                        confidence_emoji = "🟢" if suggestion['confidence'] == 'High' else "🟡"
+                        st.write(f"{confidence_emoji} **{suggestion['wb_category']}** ↔ **{suggestion['oz_category']}** (сходство: {suggestion['similarity']:.2f})")
                 
-                if suggestions:
-                    st.success(f"Найдено {len(suggestions)} предложений")
+                # Add selected suggestions
+                if selected_suggestions:
+                    st.write(f"Выбрано предложений: **{len(selected_suggestions)}**")
                     
-                    suggestions_df = pd.DataFrame(suggestions)
-                    
-                    st.dataframe(
-                        suggestions_df,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            'wb_category': 'Категория WB',
-                            'oz_category': 'Категория Ozon',
-                            'similarity': st.column_config.NumberColumn(
-                                'Сходство',
-                                format="%.2f"
-                            ),
-                            'confidence': 'Уверенность'
-                        }
-                    )
-                    
-                    # Quick add options
-                    st.subheader("Быстрое добавление")
-                    st.info("Отметьте предложения, которые хотите добавить:")
-                    
-                    selected_suggestions = []
-                    for idx, suggestion in enumerate(suggestions):
-                        if suggestion['confidence'] in ['High', 'Medium']:  # Only show high/medium confidence
-                            col1, col2 = st.columns([1, 4])
-                            with col1:
-                                if st.checkbox("", key=f"suggest_{idx}"):
-                                    selected_suggestions.append(suggestion)
-                            with col2:
-                                st.write(f"**{suggestion['wb_category']}** ↔ **{suggestion['oz_category']}** (сходство: {suggestion['similarity']:.2f})")
-                    
-                    if selected_suggestions:
-                        if st.button("➕ Добавить выбранные соответствия", key="add_selected"):
-                            success_count = 0
-                            for suggestion in selected_suggestions:
-                                if add_category_mapping(conn, suggestion['wb_category'], suggestion['oz_category'], f"Автопредложение (сходство: {suggestion['similarity']:.2f})"):
+                    if st.button("➕ Добавить выбранные соответствия", type="primary", key="add_selected"):
+                        success_count = 0
+                        error_count = 0
+                        
+                        for suggestion in selected_suggestions:
+                            try:
+                                if add_category_mapping(
+                                    conn, 
+                                    suggestion['wb_category'], 
+                                    suggestion['oz_category'], 
+                                    f"Автопредложение (сходство: {suggestion['similarity']:.2f})",
+                                    show_messages=False  # Disable individual messages for bulk operation
+                                ):
                                     success_count += 1
-                            
-                            if success_count > 0:
-                                st.success(f"Добавлено {success_count} соответствий")
-                                st.rerun()
+                                else:
+                                    error_count += 1
+                            except Exception as e:
+                                st.error(f"Ошибка при добавлении {suggestion['wb_category']} ↔ {suggestion['oz_category']}: {e}")
+                                error_count += 1
+                        
+                        if success_count > 0:
+                            st.success(f"✅ Успешно добавлено {success_count} соответствий")
+                            # Clear selections and suggestions after successful addition
+                            st.session_state.selected_suggestions_ids = set()
+                            st.session_state.suggestions = []
+                            st.session_state.suggestions_found = False
+                            st.rerun()
+                        
+                        if error_count > 0:
+                            st.error(f"❌ Ошибок при добавлении: {error_count}")
                 else:
-                    st.info("Предложений не найдено. Попробуйте уменьшить порог сходства.")
+                    st.info("Выберите предложения для добавления")
+        
+        elif st.session_state.suggestions_found and not st.session_state.suggestions:
+            st.info("Все предложения уже существуют в таблице соответствий или предложения не найдены")
     
     with mgmt_tab3:
         st.subheader("Существующие соответствия")
