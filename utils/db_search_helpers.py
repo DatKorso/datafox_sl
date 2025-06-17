@@ -8,7 +8,7 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
     """
     Retrieves Wildberries products and normalizes their barcodes.
     Each row in the output DataFrame will have one wb_sku and one individual barcode.
-    Handles cases where wb_barcodes field contains multiple barcodes separated by ';'.
+    Each barcode is stored in a separate row in wb_products table.
     (Formerly _get_normalized_wb_barcodes in db_utils.py)
 
     Args:
@@ -31,11 +31,10 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
     base_query = """
     SELECT
         p.wb_sku,
-        TRIM(b.barcode) AS individual_barcode_wb
+        TRIM(p.wb_barcodes) AS individual_barcode_wb
     FROM
-        wb_products p,
-        UNNEST(regexp_split_to_array(COALESCE(p.wb_barcodes, ''), E'[\\s;]+')) AS b(barcode)
-    WHERE NULLIF(TRIM(b.barcode), '') IS NOT NULL
+        wb_products p
+    WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL
     """
 
     if wb_skus:

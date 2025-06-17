@@ -189,6 +189,20 @@ HARDCODED_SCHEMA = {
         "config_report_key": "punta_google_sheets_url",
         "columns": "DYNAMIC",  # Указывает, что схема определяется динамически
         "pre_update_action": "DROP TABLE IF EXISTS punta_table;"  # Полная пересборка таблицы
+    },
+    "category_mapping": {
+        "description": "Соответствие категорий между маркетплейсами",
+        "file_type": "manual",  # Управляется вручную через интерфейс
+        "read_params": {},
+        "config_report_key": None,
+        "columns": [
+            {'target_col_name': 'id', 'sql_type': 'INTEGER PRIMARY KEY DEFAULT nextval(\'category_mapping_seq\')', 'source_col_name': 'id', 'notes': 'Auto-incrementing primary key using sequence'},
+            {'target_col_name': 'wb_category', 'sql_type': 'VARCHAR', 'source_col_name': 'wb_category', 'notes': 'Категория Wildberries'},
+            {'target_col_name': 'oz_category', 'sql_type': 'VARCHAR', 'source_col_name': 'oz_category', 'notes': 'Соответствующая категория Ozon'},
+            {'target_col_name': 'created_at', 'sql_type': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP', 'source_col_name': 'created_at', 'notes': 'Дата создания записи'},
+            {'target_col_name': 'notes', 'sql_type': 'TEXT', 'source_col_name': 'notes', 'notes': 'Комментарии к соответствию'}
+        ],
+        "pre_update_action": None  # Таблица не очищается при импорте
     }
 }
 
@@ -260,6 +274,12 @@ def create_tables_from_schema(con: duckdb.DuckDBPyConnection) -> bool:
 
     all_successful = True
     try:
+        # First, create sequence for category_mapping if needed
+        try:
+            con.execute("CREATE SEQUENCE IF NOT EXISTS category_mapping_seq START 1")
+        except Exception as e:
+            print(f"Warning: Could not create sequence category_mapping_seq: {e}")
+            if callable(st.warning): st.warning(f"Could not create sequence: {e}")
         for table_name, table_definition in defined_tables.items():
             res = con.execute(f"SELECT table_name FROM information_schema.tables WHERE table_name = '{table_name}';").fetchone()
             if res:
