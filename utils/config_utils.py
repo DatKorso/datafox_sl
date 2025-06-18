@@ -22,7 +22,11 @@ DEFAULT_CONFIG = {
         "oz_products_csv": "",
         "wb_prices_xlsx": "",
         "wb_products_dir": "",
+        "oz_card_rating_xlsx": "",
         "analytic_report_xlsx": ""
+    },
+    "data_filters": {
+        "oz_category_products_brands": ""
     }
 }
 

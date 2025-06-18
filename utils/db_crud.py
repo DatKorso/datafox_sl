@@ -70,6 +70,38 @@ def import_data_from_dataframe(
     if cleaned_df.empty:
         return False, 0, f"No data remains after applying brand filter for table '{table_name}'. Check your brand filter settings."
 
+    # 0.8. Ensure table exists before pre-update action
+    table_exists_query = f"""
+        SELECT COUNT(*) 
+        FROM information_schema.tables 
+        WHERE table_name = '{table_name}' AND table_schema = 'main'
+    """
+    
+    try:
+        table_exists = con.execute(table_exists_query).fetchone()[0] > 0
+        
+        if not table_exists:
+            st.info(f"📋 Таблица '{table_name}' не существует, создаем её...")
+            
+            # Create table based on schema definition
+            columns_definitions = []
+            for target_col, sql_type, source_col, notes in schema_columns_info:
+                columns_definitions.append(f'"{target_col}" {sql_type}')
+            
+            if columns_definitions:
+                create_table_sql = f"CREATE TABLE \"{table_name}\" ({', '.join(columns_definitions)});"
+                
+                try:
+                    con.execute(create_table_sql)
+                    st.success(f"✅ Таблица '{table_name}' успешно создана")
+                except Exception as e_create:
+                    return False, 0, f"Error creating table '{table_name}': {e_create}. SQL: {create_table_sql}"
+            else:
+                return False, 0, f"No column definitions found for table '{table_name}'"
+        
+    except Exception as e_check:
+        return False, 0, f"Error checking table existence for '{table_name}': {e_check}"
+
     # 1. Pre-Update Action
     pre_update_sql = table_schema_def.get("pre_update_action")
     if pre_update_sql:
@@ -402,4 +434,143 @@ def apply_brand_filter(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     else:
         st.info(f"🎯 Все {original_count} записей соответствуют фильтру брендов")
     
+    return filtered_df
+
+
+def apply_brand_filter_for_rating(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Применяет фильтр по брендам для данных рейтинга карточек (oz_card_rating).
+    Фильтрует по колонке 'Бренд' используя настройку oz_category_products_brands.
+    
+    Args:
+        df: DataFrame с данными рейтинга для фильтрации
+    
+    Returns:
+        Отфильтрованный DataFrame
+    """
+    # Получаем список брендов из настроек
+    brands_filter = config_utils.get_data_filter("oz_category_products_brands")
+    
+    if not brands_filter or brands_filter.strip() == "":
+        st.info("🔍 Фильтр брендов не установлен - загружаются рейтинги всех товаров")
+        return df
+    
+    # Разбираем список брендов
+    allowed_brands = [brand.strip() for brand in brands_filter.split(";") if brand.strip()]
+    
+    if not allowed_brands:
+        st.info("🔍 Фильтр брендов пустой - загружаются рейтинги всех товаров")
+        return df
+    
+    # Ищем колонку с брендом
+    brand_column = None
+    for col in df.columns:
+        if col.lower() in ['бренд', 'brand']:
+            brand_column = col
+            break
+    
+    if not brand_column:
+        st.warning("⚠️ Колонка 'Бренд' не найдена в файле рейтингов - фильтр не применен")
+        st.info("💡 Убедитесь, что файл содержит колонку 'Бренд' для корректной фильтрации")
+        return df
+    
+    # Применяем фильтр
+    original_count = len(df)
+    
+    # Создаем маску для фильтрации (регистронезависимый поиск)
+    mask = df[brand_column].astype(str).str.lower().isin([brand.lower() for brand in allowed_brands])
+    filtered_df = df[mask].copy()
+    
+    filtered_count = len(filtered_df)
+    excluded_count = original_count - filtered_count
+    
+    # Отображаем результаты фильтрации
+    if excluded_count > 0:
+        st.success(f"🎯 Фильтр брендов для рейтингов применен: {original_count} → {filtered_count} записей")
+        st.info(f"📋 Разрешенные бренды: {', '.join(allowed_brands)}")
+        st.warning(f"🚫 Исключено записей: {excluded_count}")
+        
+        # Показываем статистику по брендам в исходных данных
+        if not df[brand_column].isna().all():
+            brand_stats = df[brand_column].value_counts().head(10)
+            st.info("📊 Статистика брендов в исходных данных рейтингов (топ-10):")
+            for brand, count in brand_stats.items():
+                status = "✅" if str(brand).lower() in [b.lower() for b in allowed_brands] else "❌"
+                st.write(f"  {status} **{brand}**: {count} товаров")
+    else:
+        st.info(f"🎯 Все {original_count} записей с рейтингами соответствуют фильтру брендов")
+    
     return filtered_df 
+
+def migrate_oz_card_rating_schema(conn) -> bool:
+    """
+    Обновляет схему таблицы oz_card_rating для поддержки десятичных рейтингов.
+    Изменяет тип колонки rating с INTEGER на DECIMAL(3,2).
+    
+    Args:
+        conn: соединение с БД
+        
+    Returns:
+        True если миграция прошла успешно, False в противном случае
+    """
+    try:
+        # Проверим, существует ли таблица
+        table_exists = conn.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.tables 
+            WHERE table_name = 'oz_card_rating' AND table_schema = 'main'
+        """).fetchone()[0] > 0
+        
+        if not table_exists:
+            st.info("ℹ️ Таблица oz_card_rating не существует - будет создана с новой схемой")
+            return True
+        
+        # Проверим текущий тип колонки rating
+        column_info = conn.execute("""
+            SELECT data_type 
+            FROM information_schema.columns 
+            WHERE table_name = 'oz_card_rating' 
+            AND column_name = 'rating' 
+            AND table_schema = 'main'
+        """).fetchone()
+        
+        if column_info and 'DECIMAL' in str(column_info[0]).upper():
+            st.info("✅ Таблица oz_card_rating уже использует правильный тип данных для рейтинга")
+            return True
+        
+        # Выполняем миграцию
+        st.info("🔄 Обновление схемы таблицы oz_card_rating...")
+        
+        # Создаем временную таблицу с новой схемой
+        conn.execute("""
+            CREATE TABLE oz_card_rating_new (
+                oz_sku BIGINT,
+                oz_vendor_code VARCHAR,
+                rating DECIMAL(3,2),
+                rev_number INTEGER
+            )
+        """)
+        
+        # Копируем данные из старой таблицы (если есть)
+        try:
+            conn.execute("""
+                INSERT INTO oz_card_rating_new (oz_sku, oz_vendor_code, rating, rev_number)
+                SELECT oz_sku, oz_vendor_code, CAST(rating AS DECIMAL(3,2)), rev_number
+                FROM oz_card_rating
+            """)
+            st.info("📋 Данные скопированы в новую таблицу")
+        except Exception as e:
+            st.warning(f"⚠️ Не удалось скопировать данные: {e}")
+        
+        # Удаляем старую таблицу
+        conn.execute("DROP TABLE oz_card_rating")
+        
+        # Переименовываем новую таблицу
+        conn.execute("ALTER TABLE oz_card_rating_new RENAME TO oz_card_rating")
+        
+        st.success("✅ Схема таблицы oz_card_rating успешно обновлена")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Ошибка при обновлении схемы: {e}")
+        return False 

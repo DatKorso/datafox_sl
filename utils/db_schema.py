@@ -190,6 +190,19 @@ HARDCODED_SCHEMA = {
         "columns": "DYNAMIC",  # Указывает, что схема определяется динамически
         "pre_update_action": "DROP TABLE IF EXISTS punta_table;"  # Полная пересборка таблицы
     },
+    "oz_card_rating": {
+        "description": "Рейтинги карточек товаров Ozon",
+        "file_type": "xlsx",
+        "read_params": {'header': 0, 'decimal': ','},
+        "config_report_key": "oz_card_rating_xlsx",
+        "columns": [
+            {'target_col_name': 'oz_sku', 'sql_type': 'BIGINT', 'source_col_name': 'RezonitemID', 'notes': None},
+            {'target_col_name': 'oz_vendor_code', 'sql_type': 'VARCHAR', 'source_col_name': 'Артикул', 'notes': None},
+            {'target_col_name': 'rating', 'sql_type': 'DECIMAL(3,2)', 'source_col_name': 'Рейтинг (1)', 'notes': None},
+            {'target_col_name': 'rev_number', 'sql_type': 'INTEGER', 'source_col_name': 'Кол-во отзывов', 'notes': None}
+        ],
+        "pre_update_action": "DELETE FROM oz_card_rating;"
+    },
     "category_mapping": {
         "description": "Соответствие категорий между маркетплейсами",
         "file_type": "manual",  # Управляется вручную через интерфейс

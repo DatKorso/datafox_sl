@@ -119,6 +119,11 @@ with st.expander("Marketplace Report Paths"):
     punta_sheets_url_new = st.text_input("Punta Google Sheets URL", value=punta_sheets_url_current, placeholder="https://docs.google.com/spreadsheets/d/your_sheet_id/edit#gid=0", help="URL ссылка на Google Sheets документ с данными Punta. Документ должен быть доступен для просмотра.")
 
     st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Cards & Ratings")
+    oz_card_rating_current = config_utils.get_report_path("oz_card_rating_xlsx")
+    oz_card_rating_new = st.text_input("Ozon Card Rating (.xlsx)", value=oz_card_rating_current, placeholder="Path to ozon_card_rating.xlsx", help="Full path to the Ozon card rating Excel file. The file should contain columns: RezonitemID, Артикул, Рейтинг (1), Кол-во отзывов.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("Custom Reports")
     analytic_report_current = config_utils.get_report_path("analytic_report_xlsx")
     analytic_report_new = st.text_input("Analytic Report (.xlsx)", value=analytic_report_current, placeholder="Path to analytic_report.xlsx", help="Full path to the custom analytic report Excel file. The file should contain 'analytic_report' sheet with proper structure.")
@@ -246,6 +251,7 @@ if st.button("Save All Settings", key="save_all_settings_button", help="Saves al
         "Wildberries Prices (.xlsx)": (wb_prices_new, False),
         "Wildberries Products Directory": (wb_products_dir_new, True), # True indicates it's a directory
         "Punta Google Sheets URL": (punta_sheets_url_new, "google_sheets"), # Special type for Google Sheets
+        "Ozon Card Rating (.xlsx)": (oz_card_rating_new, False),
         "Analytic Report (.xlsx)": (analytic_report_new, False)
     }
     
@@ -288,6 +294,9 @@ if st.button("Save All Settings", key="save_all_settings_button", help="Saves al
     
     # Update Google Sheets integration
     config_utils.set_report_path("punta_google_sheets_url", punta_sheets_url_new)
+    
+    # Update Cards & Ratings
+    config_utils.set_report_path("oz_card_rating_xlsx", oz_card_rating_new)
     
     # Update Analytic Report
     config_utils.set_report_path("analytic_report_xlsx", analytic_report_new)
