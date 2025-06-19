@@ -8,7 +8,7 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
     """
     Retrieves Wildberries products and normalizes their barcodes.
     Each row in the output DataFrame will have one wb_sku and one individual barcode.
-    Each barcode is stored in a separate row in wb_products table.
+    Barcodes are stored as semicolon-separated strings in wb_products.wb_barcodes and are split into individual rows.
     (Formerly _get_normalized_wb_barcodes in db_utils.py)
 
     Args:
@@ -25,18 +25,10 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
         else: print("Error: DB connection not available for normalizing WB barcodes.")
         return pd.DataFrame()
 
-    query_parts = []
-    params = {}
-
-    base_query = """
-    SELECT
-        p.wb_sku,
-        TRIM(p.wb_barcodes) AS individual_barcode_wb
-    FROM
-        wb_products p
-    WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL
-    """
-
+    # Process wb_skus filtering first to build the correct query
+    wb_sku_filter = ""
+    params = ()
+    
     if wb_skus:
         try:
             skus_for_query = [s for s in wb_skus if str(s).strip().isdigit()]  # Keep as strings, remove int() casting
@@ -51,19 +43,30 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
             else: print(f"Error: {msg}")
             return pd.DataFrame()
         
-        base_query += " AND p.wb_sku IN ({})".format(", ".join("?" * len(skus_for_query)))
+        wb_sku_filter = " AND p.wb_sku IN ({})".format(", ".join("?" * len(skus_for_query)))
         params = tuple(skus_for_query)
-        query_parts.append(base_query)
-    else:
-        query_parts.append(base_query)
-    
-    final_query = " ".join(query_parts)
+
+    # Updated query to properly split barcodes separated by semicolon
+    base_query = f"""
+    WITH split_barcodes AS (
+        SELECT 
+            p.wb_sku,
+            UNNEST(string_split(p.wb_barcodes, ';')) AS individual_barcode_wb
+        FROM wb_products p
+        WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL{wb_sku_filter}
+    )
+    SELECT 
+        wb_sku,
+        TRIM(individual_barcode_wb) AS individual_barcode_wb
+    FROM split_barcodes
+    WHERE NULLIF(TRIM(individual_barcode_wb), '') IS NOT NULL
+    """
     
     try:
         if params:
-            result_df = con.execute(final_query, params).fetchdf()
+            result_df = con.execute(base_query, params).fetchdf()
         else:
-            result_df = con.execute(final_query).fetchdf()
+            result_df = con.execute(base_query).fetchdf()
         return result_df
     except Exception as e:
         err_msg = f"Error normalizing WB barcodes: {e}"

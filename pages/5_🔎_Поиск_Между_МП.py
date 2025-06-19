@@ -66,6 +66,7 @@ ozon_fields_options = {
     "Ozon: Бренд (oz_brand)": ("oz_products", "oz_brand"),
     "Ozon: Статус (oz_product_status)": ("oz_products", "oz_product_status"),
     "Ozon: Цена (oz_actual_price)": ("oz_products", "oz_actual_price"),
+    "Ozon: Остаток (oz_fbo_stock)": ("oz_products", "oz_fbo_stock"),
     "Ozon: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode") # From oz_barcodes table
 }
 
@@ -90,6 +91,7 @@ default_selections = [
     "Общий штрихкод (по которому найдено совпадение)",
     "Ozon: Артикул (oz_sku)",
     "Ozon: Код поставщика (oz_vendor_code)",
+    "Ozon: Остаток (oz_fbo_stock)",
     "WB: Артикул (wb_sku)",
 ]
 
