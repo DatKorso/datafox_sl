@@ -71,6 +71,9 @@ def map_wb_to_ozon_by_size(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[in
     Maps WB SKUs to Ozon SKUs grouped by sizes.
     Uses wb_products.wb_size to determine size and maps through common barcodes.
     
+    ОБНОВЛЕНО: Теперь использует централизованный CrossMarketplaceLinker
+    для исключения дублирования логики связывания.
+    
     Args:
         db_conn: Database connection
         wb_sku_list: List of WB SKUs to process
@@ -82,89 +85,11 @@ def map_wb_to_ozon_by_size(db_conn, wb_sku_list: List[str]) -> Dict[str, Dict[in
         return {}
     
     try:
-        # Step 1: Get WB products with their sizes and barcodes
-        wb_skus_for_query = list(set(wb_sku_list))  # Remove duplicates
-        wb_query = f"""
-        SELECT 
-            p.wb_sku,
-            p.wb_size,
-            TRIM(b.barcode) AS individual_barcode
-        FROM wb_products p,
-        UNNEST(regexp_split_to_array(COALESCE(p.wb_barcodes, ''), E'[\\s;]+')) AS b(barcode)
-        WHERE p.wb_sku IN ({', '.join(['?'] * len(wb_skus_for_query))})
-            AND NULLIF(TRIM(b.barcode), '') IS NOT NULL
-        """
+        # Use centralized linker for WB-Ozon links grouped by sizes
+        from utils.cross_marketplace_linker import CrossMarketplaceLinker
+        linker = CrossMarketplaceLinker(db_conn)
         
-        wb_data_df = db_conn.execute(wb_query, wb_skus_for_query).fetchdf()
-        
-        if wb_data_df.empty:
-            st.warning("Не найдены WB продукты с валидными штрихкодами")
-            return {}
-        
-        # Step 2: Get all Ozon products and their barcodes
-        oz_query = """
-        SELECT DISTINCT
-            p.oz_sku,
-            b.oz_barcode
-        FROM oz_products p
-        JOIN oz_barcodes b ON p.oz_product_id = b.oz_product_id
-        WHERE NULLIF(TRIM(b.oz_barcode), '') IS NOT NULL
-        """
-        
-        oz_data_df = db_conn.execute(oz_query).fetchdf()
-        
-        if oz_data_df.empty:
-            st.warning("Не найдены Ozon продукты с валидными штрихкодами")
-            return {}
-        
-        # Step 3: Join WB and Ozon data by common barcodes
-        wb_data_df = wb_data_df.rename(columns={'individual_barcode': 'barcode'})
-        oz_data_df = oz_data_df.rename(columns={'oz_barcode': 'barcode'})
-        
-        # Ensure consistent data types
-        wb_data_df['barcode'] = wb_data_df['barcode'].astype(str).str.strip()
-        oz_data_df['barcode'] = oz_data_df['barcode'].astype(str).str.strip()
-        wb_data_df['wb_sku'] = wb_data_df['wb_sku'].astype(str)
-        oz_data_df['oz_sku'] = oz_data_df['oz_sku'].astype(str)
-        
-        # Clean empty barcodes
-        wb_data_df = wb_data_df[wb_data_df['barcode'] != ''].drop_duplicates()
-        oz_data_df = oz_data_df[oz_data_df['barcode'] != ''].drop_duplicates()
-        
-        # Join on common barcodes
-        matched_df = pd.merge(wb_data_df, oz_data_df, on='barcode', how='inner')
-        
-        if matched_df.empty:
-            st.info("Не найдено совпадений по штрихкодам между WB и Ozon")
-            return {}
-        
-        # Step 4: Group by wb_sku and wb_size to build the result mapping
-        result_map = {}
-        
-        for _, row in matched_df.iterrows():
-            wb_sku = str(row['wb_sku'])
-            wb_size = None
-            
-            # Try to get integer size from wb_size
-            if pd.notna(row['wb_size']):
-                try:
-                    wb_size = int(float(row['wb_size']))
-                except (ValueError, TypeError):
-                    # If wb_size is not numeric, skip this record
-                    continue
-            
-            oz_sku = str(row['oz_sku'])
-            
-            if wb_sku not in result_map:
-                result_map[wb_sku] = {}
-            
-            if wb_size is not None:
-                if wb_size not in result_map[wb_sku]:
-                    result_map[wb_sku][wb_size] = []
-                if oz_sku not in result_map[wb_sku][wb_size]:
-                    result_map[wb_sku][wb_size].append(oz_sku)
-        
-        return result_map
+        return linker.get_links_with_sizes(wb_sku_list)
         
     except Exception as e:
         st.error(f"Ошибка при сопоставлении WB и Ozon размеров: {e}")

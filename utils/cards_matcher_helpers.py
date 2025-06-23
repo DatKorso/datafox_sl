@@ -423,135 +423,8 @@ def get_rating_color(rating: float) -> str:
         return "red"
 
 
-def get_wb_sku_ratings_with_oz_data(conn, wb_skus: list[str]) -> pd.DataFrame:
-    """
-    Получает wb_sku с вычисленными рейтингами на основе связанных oz_sku.
-    Находит связанные oz_sku через штрихкоды и вычисляет средний рейтинг.
-    
-    Правильно обрабатывает множественные штрихкоды в wb_products.wb_barcodes (разделенные ";").
-    
-    Args:
-        conn: соединение с БД
-        wb_skus: список wb_sku для анализа
-        
-    Returns:
-        DataFrame с колонками: wb_sku, avg_rating, oz_sku_count, oz_skus_list, 
-                             total_reviews, min_rating, max_rating
-    """
-    if not wb_skus:
-        return pd.DataFrame()
-    
-    try:
-        # Получаем сырые штрихкоды WB (следуем логике из Category Compare)
-        wb_raw_query = f"""
-        SELECT DISTINCT wb_sku, wb_barcodes
-        FROM wb_products 
-        WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus))})
-            AND NULLIF(TRIM(wb_barcodes), '') IS NOT NULL
-        """
-        wb_raw_df = conn.execute(wb_raw_query, wb_skus).fetchdf()
-        
-        if wb_raw_df.empty:
-            return pd.DataFrame()
-        
-        # Нормализуем штрихкоды, разбивая по символу ";"
-        wb_barcodes_data = []
-        for _, row in wb_raw_df.iterrows():
-            wb_sku = str(row['wb_sku'])
-            barcodes_str = str(row['wb_barcodes'])
-            # Разбиваем по точке с запятой и очищаем каждый штрихкод
-            individual_barcodes = [b.strip() for b in barcodes_str.split(';') if b.strip()]
-            for barcode in individual_barcodes:
-                wb_barcodes_data.append({'wb_sku': wb_sku, 'barcode': barcode})
-        
-        wb_barcodes_df = pd.DataFrame(wb_barcodes_data)
-        
-        if wb_barcodes_df.empty:
-            return pd.DataFrame()
-        
-        # Получаем все штрихкоды и идентификаторы Ozon
-        from utils.db_search_helpers import get_ozon_barcodes_and_identifiers
-        oz_barcodes_df = get_ozon_barcodes_and_identifiers(conn)
-        if oz_barcodes_df.empty:
-            return pd.DataFrame()
-        
-        # Подготавливаем данные для соединения
-        oz_barcodes_df = oz_barcodes_df.rename(columns={'oz_barcode': 'barcode'})
-        
-        # Обеспечиваем согласованность штрихкодов
-        wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
-        oz_barcodes_df['barcode'] = oz_barcodes_df['barcode'].astype(str).str.strip()
-        wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
-        oz_barcodes_df['oz_sku'] = oz_barcodes_df['oz_sku'].astype(str)
-        
-        # Убираем пустые штрихкоды и дубликаты
-        wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
-        oz_barcodes_df = oz_barcodes_df[oz_barcodes_df['barcode'] != ''].drop_duplicates()
-        
-        # Находим связанные товары через общие штрихкоды
-        linked_df = pd.merge(wb_barcodes_df, oz_barcodes_df, on='barcode', how='inner')
-        
-        if linked_df.empty:
-            return pd.DataFrame()
-        
-        # Отладочная информация (только для разработки)
-        # print(f"DEBUG: Найдено штрихкодов WB: {len(wb_barcodes_df)}")
-        # print(f"DEBUG: Найдено связанных товаров: {len(linked_df)}")
-        # print(f"DEBUG: Уникальных wb_sku: {linked_df['wb_sku'].nunique()}")
-        # print(f"DEBUG: Уникальных oz_sku: {linked_df['oz_sku'].nunique()}")
-        
-        # Получаем рейтинги для связанных oz_sku
-        oz_skus_for_rating = linked_df['oz_sku'].astype(str).unique().tolist()
-        oz_skus_str = ', '.join([f"'{sku}'" for sku in oz_skus_for_rating])
-        
-        rating_query = f"""
-        SELECT 
-            oz_sku,
-            rating,
-            rev_number
-        FROM oz_card_rating 
-        WHERE oz_sku IN ({oz_skus_str})
-        """
-        
-        ratings_df = conn.execute(rating_query).fetchdf()
-        
-        if ratings_df.empty:
-            return pd.DataFrame()
-        
-        # Приводим oz_sku к одному типу данных перед соединением
-        linked_df['oz_sku'] = linked_df['oz_sku'].astype(str)
-        ratings_df['oz_sku'] = ratings_df['oz_sku'].astype(str)
-        
-        # Соединяем связанные товары с рейтингами
-        result_df = pd.merge(
-            linked_df[['wb_sku', 'oz_sku']], 
-            ratings_df, 
-            on='oz_sku', 
-            how='inner'
-        )
-        
-        # Группируем по wb_sku и вычисляем агрегированные рейтинги
-        wb_ratings = result_df.groupby('wb_sku').agg({
-            'rating': ['mean', 'min', 'max'],
-            'rev_number': 'sum',
-            'oz_sku': [lambda x: len(x.unique()), lambda x: '; '.join(map(str, x.unique()))]
-        }).round(2)
-        
-        # Упрощаем структуру колонок
-        wb_ratings.columns = ['avg_rating', 'min_rating', 'max_rating', 'total_reviews', 'oz_sku_count', 'oz_skus_list']
-        wb_ratings = wb_ratings.reset_index()
-        
-        # Убеждаемся что wb_sku имеет правильный тип данных
-        wb_ratings['wb_sku'] = wb_ratings['wb_sku'].astype(str)
-        
-        # Убираем возможные дубликаты wb_sku (на всякий случай)
-        wb_ratings = wb_ratings.drop_duplicates(subset=['wb_sku'], keep='first')
-        
-        return wb_ratings
-        
-    except Exception as e:
-        print(f"Ошибка при получении рейтингов wb_sku: {e}")
-        return pd.DataFrame()
+# Функция get_wb_sku_ratings_with_oz_data удалена - заменена на 
+# CrossMarketplaceLinker.get_links_with_ozon_ratings() из utils/cross_marketplace_linker.py
 
 
 def get_punta_table_data_for_wb_skus(conn, wb_skus: list[str], selected_columns: list[str] = None) -> pd.DataFrame:
@@ -580,6 +453,9 @@ def get_punta_table_data_for_wb_skus(conn, wb_skus: list[str], selected_columns:
         # Определяем колонки для выборки
         if selected_columns:
             columns_to_select = ['wb_sku'] + [col for col in selected_columns if col in available_columns and col != 'wb_sku']
+            # Всегда добавляем поле sort если оно доступно (для приоритизации)
+            if 'sort' in available_columns and 'sort' not in columns_to_select:
+                columns_to_select.append('sort')
         else:
             columns_to_select = available_columns
         
@@ -613,21 +489,27 @@ def create_product_groups(
     conn, 
     wb_skus: list[str], 
     grouping_columns: list[str] = None,
-    min_group_rating: float = 0.0
+    min_group_rating: float = 0.0,
+    max_wb_sku_per_group: int = 20,
+    enable_sort_priority: bool = True
 ) -> pd.DataFrame:
     """
     Создает группы товаров на основе wb_sku с учетом рейтингов и дополнительных параметров.
     
     Алгоритм:
     1. Сначала формируются группы на основе общих параметров из punta_table
-    2. Затем из групп исключаются wb_sku с низким рейтингом для достижения min_group_rating
-    3. Все oz_sku, принадлежащие одному wb_sku, рассматриваются как единое целое
+    2. Применяется приоритизация по полю sort (если включена)
+    3. Затем из групп исключаются wb_sku с низким рейтингом для достижения min_group_rating
+    4. Группы разделяются если превышено максимальное количество wb_sku (max_wb_sku_per_group)
+    5. Все oz_sku, принадлежащие одному wb_sku, рассматриваются как единое целое
     
     Args:
         conn: соединение с БД
         wb_skus: список wb_sku для группировки
         grouping_columns: список колонок из punta_table для группировки
         min_group_rating: минимальный рейтинг группы (исключаются wb_sku для достижения этого значения)
+        max_wb_sku_per_group: максимальное количество wb_sku в одной группе (по умолчанию 20)
+        enable_sort_priority: включить приоритизацию по полю sort из punta_table (по умолчанию True)
         
     Returns:
         DataFrame с группами товаров
@@ -636,8 +518,10 @@ def create_product_groups(
         return pd.DataFrame()
     
     try:
-        # Получаем рейтинги wb_sku
-        wb_ratings_df = get_wb_sku_ratings_with_oz_data(conn, wb_skus)
+        # Получаем рейтинги wb_sku через централизованный линкер
+        from utils.cross_marketplace_linker import CrossMarketplaceLinker
+        linker = CrossMarketplaceLinker(conn)
+        wb_ratings_df = linker.get_links_with_ozon_ratings(wb_skus)
         
         if wb_ratings_df.empty:
             return pd.DataFrame()
@@ -687,10 +571,17 @@ def create_product_groups(
                         if current_avg >= min_rating:
                             return group_data
                         
-                        # Сортируем по рейтингу по убыванию
-                        sorted_group = group_data.sort_values('avg_rating', ascending=False)
+                        # Сортируем с учетом приоритизации
+                        if enable_sort_priority and 'sort' in group_data.columns:
+                            # Приоритизация: сначала по sort (убыванию), затем по рейтингу (убыванию)
+                            # Товары с высоким sort исключаются в последнюю очередь
+                            group_data['sort_filled'] = group_data['sort'].fillna(0)  # Заполняем NaN нулями
+                            sorted_group = group_data.sort_values(['sort_filled', 'avg_rating'], ascending=[False, False])
+                        else:
+                            # Обычная сортировка по рейтингу по убыванию
+                            sorted_group = group_data.sort_values('avg_rating', ascending=False)
                         
-                        # Пошагово удаляем товары с самым низким рейтингом
+                        # Пошагово удаляем товары с самым низким приоритетом/рейтингом
                         # пока средний рейтинг группы не станет >= min_rating
                         for i in range(1, len(sorted_group) + 1):
                             current_subset = sorted_group.iloc[:i]
@@ -735,6 +626,43 @@ def create_product_groups(
                             print(f"ВНИМАНИЕ: Дубликаты после объединения отфильтрованных групп")
                             print(f"Дубликаты: {result_df[result_df['wb_sku'].duplicated()]['wb_sku'].tolist()}")
                             result_df = result_df.drop_duplicates(subset=['wb_sku'], keep='first')
+                        
+                        # Разделяем группы, превышающие максимальное количество wb_sku
+                        if max_wb_sku_per_group > 0:
+                            def split_large_groups(df):
+                                """Разделяет группы, превышающие максимальное количество wb_sku"""
+                                split_groups = []
+                                
+                                for group_id in df['preliminary_group_id'].unique():
+                                    group_data = df[df['preliminary_group_id'] == group_id].copy()
+                                    
+                                    if len(group_data) <= max_wb_sku_per_group:
+                                        # Группа не превышает лимит - оставляем как есть
+                                        split_groups.append(group_data)
+                                    else:
+                                        # Группа превышает лимит - разделяем
+                                        # Сортируем с учетом приоритизации (лучшие товары в первых подгруппах)
+                                        if enable_sort_priority and 'sort' in group_data.columns:
+                                            # Приоритизация: сначала по sort (убыванию), затем по рейтингу (убыванию)
+                                            group_data['sort_filled'] = group_data['sort'].fillna(0)  # Заполняем NaN нулями
+                                            sorted_group = group_data.sort_values(['sort_filled', 'avg_rating'], ascending=[False, False])
+                                        else:
+                                            # Обычная сортировка по рейтингу (лучшие товары в первых подгруппах)
+                                            sorted_group = group_data.sort_values('avg_rating', ascending=False)
+                                        
+                                        # Разделяем на подгруппы
+                                        for i in range(0, len(sorted_group), max_wb_sku_per_group):
+                                            subgroup = sorted_group.iloc[i:i+max_wb_sku_per_group].copy()
+                                            
+                                            # Обновляем ключ группы для подгруппы
+                                            subgroup_suffix = f"_SPLIT_{i//max_wb_sku_per_group + 1}"
+                                            subgroup['group_key'] = subgroup['group_key'] + subgroup_suffix
+                                            
+                                            split_groups.append(subgroup)
+                                
+                                return pd.concat(split_groups, ignore_index=True) if split_groups else pd.DataFrame()
+                            
+                            result_df = split_large_groups(result_df)
                     else:
                         result_df = pd.DataFrame()
                     
@@ -805,6 +733,7 @@ def create_product_groups(
                         min_rating = row['group_min_rating']
                         wb_count = row['wb_count']
                         is_excluded = row['group_key'].startswith('EXCLUDED_') if 'group_key' in result_df.columns else False
+                        is_split = '_SPLIT_' in str(row['group_key']) if 'group_key' in result_df.columns else False
                         
                         if is_excluded:
                             return "Исключен из группы - низкий рейтинг"
@@ -813,6 +742,22 @@ def create_product_groups(
                                 return "Единственный товар в группе"
                             else:
                                 return "Одиночный товар - не соответствует требованиям группы"
+                        elif is_split:
+                            if rating_spread <= 0.5 and avg_rating >= 4.5:
+                                return f"Отличная подгруппа (разделена, макс. {max_wb_sku_per_group} товаров)"
+                            elif rating_spread <= 1.0 and avg_rating >= 4.0:
+                                return f"Хорошая подгруппа (разделена, макс. {max_wb_sku_per_group} товаров)"
+                            elif rating_spread <= 1.5 and avg_rating >= 3.5:
+                                return f"Удовлетворительная подгруппа (разделена, макс. {max_wb_sku_per_group} товаров)"
+                            else:
+                                return f"Подгруппа требует проверки (разделена, макс. {max_wb_sku_per_group} товаров)"
+                        elif wb_count >= max_wb_sku_per_group * 0.8:  # Близко к максимуму
+                            if rating_spread <= 0.5 and avg_rating >= 4.5:
+                                return f"Отличная большая группа ({wb_count} товаров)"
+                            elif rating_spread <= 1.0 and avg_rating >= 4.0:
+                                return f"Хорошая большая группа ({wb_count} товаров)"
+                            else:
+                                return f"Большая группа требует проверки ({wb_count} товаров)"
                         elif rating_spread <= 0.5 and avg_rating >= 4.5:
                             return "Отличная группа - объединить"
                         elif rating_spread <= 1.0 and avg_rating >= 4.0:
@@ -824,8 +769,13 @@ def create_product_groups(
                     
                     result_df['group_recommendation'] = result_df.apply(get_group_recommendation, axis=1)
                     
-                    # Сортируем по группам и рейтингу
-                    result_df = result_df.sort_values(['group_id', 'avg_rating'], ascending=[True, False])
+                    # Сортируем по группам и приоритету/рейтингу
+                    if enable_sort_priority and 'sort' in result_df.columns:
+                        # Заполняем NaN в sort нулями для корректной сортировки
+                        result_df['sort_filled'] = result_df['sort'].fillna(0)
+                        result_df = result_df.sort_values(['group_id', 'sort_filled', 'avg_rating'], ascending=[True, False, False])
+                    else:
+                        result_df = result_df.sort_values(['group_id', 'avg_rating'], ascending=[True, False])
                     
                     # Финальная проверка на дубликаты wb_sku (защита от ошибок)
                     if result_df['wb_sku'].duplicated().any():
@@ -999,8 +949,10 @@ def test_wb_sku_connections(conn, wb_sku: str, show_debug: bool = True) -> dict:
                 st.info(f"OZ SKU с рейтингами: {sorted(ratings_df['oz_sku'].astype(str).unique().tolist())}")
             
             if not ratings_df.empty:
-                # Финальные результаты
-                final_result = get_wb_sku_ratings_with_oz_data(conn, [wb_sku])
+                # Финальные результаты через централизованный линкер
+                from utils.cross_marketplace_linker import CrossMarketplaceLinker
+                linker = CrossMarketplaceLinker(conn)
+                final_result = linker.get_links_with_ozon_ratings([wb_sku])
                 results['final_rating_data'] = final_result
                 
                 if not final_result.empty:
@@ -1037,6 +989,8 @@ def analyze_group_quality(groups_df: pd.DataFrame) -> dict:
         # Анализ размеров групп
         group_sizes = groups_df.groupby('group_id').size()
         avg_group_size = group_sizes.mean()
+        max_group_size = group_sizes.max()
+        min_group_size = group_sizes.min()
         
         # Анализ рейтингов
         avg_group_rating = groups_df['group_avg_rating'].mean()
@@ -1048,15 +1002,55 @@ def analyze_group_quality(groups_df: pd.DataFrame) -> dict:
         good_groups = groups_df[groups_df['group_avg_rating'] >= 4.0]['group_id'].nunique()
         excellent_groups = groups_df[groups_df['group_avg_rating'] >= 4.5]['group_id'].nunique()
         
-        return {
+        # Анализ разделенных групп
+        split_groups = groups_df[groups_df['group_recommendation'].str.contains('разделена', case=False, na=False)]['group_id'].nunique()
+        large_groups = groups_df[groups_df['group_recommendation'].str.contains('большая группа', case=False, na=False)]['group_id'].nunique()
+        
+        # Статистика по размерам групп
+        single_product_groups = (group_sizes == 1).sum()
+        small_groups = ((group_sizes > 1) & (group_sizes <= 5)).sum()
+        medium_groups = ((group_sizes > 5) & (group_sizes <= 15)).sum()
+        large_groups_count = (group_sizes > 15).sum()
+        
+        # Анализ приоритизации (если включена)
+        priority_stats = {}
+        if 'sort' in groups_df.columns:
+            # Статистика по полю sort
+            sort_data = groups_df['sort'].dropna()
+            if not sort_data.empty:
+                priority_stats = {
+                    'has_priority_data': True,
+                    'products_with_priority': len(sort_data),
+                    'avg_sort_value': round(sort_data.mean(), 2),
+                    'max_sort_value': sort_data.max(),
+                    'min_sort_value': sort_data.min(),
+                    'high_priority_products': len(sort_data[sort_data > sort_data.median()]) if len(sort_data) > 0 else 0
+                }
+            else:
+                priority_stats = {'has_priority_data': False}
+        else:
+            priority_stats = {'has_priority_data': False}
+        
+        result = {
             'total_groups': total_groups,
             'total_products': total_products,
             'avg_group_size': round(avg_group_size, 1),
+            'max_group_size': max_group_size,
+            'min_group_size': min_group_size,
             'avg_group_rating': round(avg_group_rating, 2),
             'good_groups_count': good_groups,
             'excellent_groups_count': excellent_groups,
-            'recommendations': recommendations.to_dict()
+            'split_groups_count': split_groups,
+            'large_groups_count': large_groups,
+            'single_product_groups': single_product_groups,
+            'small_groups': small_groups,
+            'medium_groups': medium_groups,
+            'large_groups_size_count': large_groups_count,
+            'recommendations': recommendations.to_dict(),
+            'priority_stats': priority_stats
         }
+        
+        return result
         
     except Exception as e:
         print(f"Ошибка при анализе качества групп: {e}")

@@ -340,43 +340,18 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     # Ensure WB SKUs are strings for helper functions
     wb_sku_list_str = [str(sku) for sku in wb_sku_list]
 
-    # Get WB barcodes
-    wb_barcodes_df = get_normalized_wb_barcodes(db_conn, wb_skus=wb_sku_list_str)
-    if wb_barcodes_df.empty:
-        st.warning("Не найдены штрихкоды для указанных WB SKU.")
-        return pd.DataFrame()
-
-    # Get all Ozon barcodes to find matches
-    oz_barcodes_ids_df = get_ozon_barcodes_and_identifiers(db_conn)
-    if oz_barcodes_ids_df.empty:
-        st.warning("Не удалось загрузить штрихкоды Ozon для сопоставления.")
-        return pd.DataFrame()
-
-    # Prepare data for merge
-    wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
-    oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
+    # Use centralized linker for WB-Ozon connections
+    from utils.cross_marketplace_linker import CrossMarketplaceLinker
+    linker = CrossMarketplaceLinker(db_conn)
     
-    # Ensure barcode columns are strings and clean
-    wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
-    oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
-    
-    # Convert SKU columns to string for consistency
-    wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
-    oz_barcodes_ids_df['oz_sku'] = oz_barcodes_ids_df['oz_sku'].astype(str)
-    
-    # Remove empty barcodes and duplicates
-    wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
-    oz_barcodes_ids_df = oz_barcodes_ids_df[oz_barcodes_ids_df['barcode'] != ''].drop_duplicates()
-
-    # Merge to find common barcodes
-    merged_df = pd.merge(wb_barcodes_df, oz_barcodes_ids_df, on='barcode', how='inner')
-
-    if merged_df.empty:
+    # Get basic links with product details
+    linked_df = linker.get_extended_links(wb_sku_list_str, include_product_details=True)
+    if linked_df.empty:
         st.info("Не найдено совпадений Ozon SKU для указанных WB SKU по штрихкодам.")
         return pd.DataFrame()
 
-    # Get unique WB-Ozon SKU pairs
-    sku_pairs_df = merged_df[['wb_sku', 'oz_sku']].drop_duplicates()
+    # Get unique WB-Ozon SKU pairs from centralized results
+    sku_pairs_df = linked_df[['wb_sku', 'oz_sku']].drop_duplicates()
     
     # Add group numbers
     group_mapping = {}
@@ -387,9 +362,16 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     
     sku_pairs_df['group_num'] = sku_pairs_df['wb_sku'].map(group_mapping)
     
-    # Get comprehensive Ozon product details
+    # Get comprehensive Ozon product details (some already in linked_df)
     oz_skus_for_query = list(sku_pairs_df['oz_sku'].unique())
-    ozon_details_df = get_ozon_product_details(db_conn, oz_skus_for_query)
+    
+    # Extract existing product details from linker results
+    if 'oz_actual_price' in linked_df.columns:
+        # Use data from centralized linker (already includes product details)
+        ozon_details_df = linked_df[['oz_sku', 'oz_vendor_code', 'oz_actual_price', 'oz_fbo_stock']].drop_duplicates()
+    else:
+        # Fallback to separate query
+        ozon_details_df = get_ozon_product_details(db_conn, oz_skus_for_query)
     
     # Get individual orders for last 14 days
     orders_df = get_ozon_orders_14_days(db_conn, oz_skus_for_query)

@@ -9,7 +9,7 @@ This page allows users to:
 """
 import streamlit as st
 from utils.db_connection import connect_db
-from utils.db_search_helpers import find_cross_marketplace_matches
+from utils.cross_marketplace_linker import CrossMarketplaceLinker
 import pandas as pd
 
 st.set_page_config(page_title="Cross-Marketplace Search - Marketplace Analyzer", layout="wide")
@@ -127,8 +127,9 @@ if st.button("🚀 Найти совпадающие товары", type="primar
                 selected_fields_map_for_query[label] = wb_fields_options[label]
 
         with st.spinner("Идет поиск совпадений... Это может занять некоторое время..."):
-            results_df = find_cross_marketplace_matches(
-                conn,
+            # Используем новый централизованный модуль связывания
+            linker = CrossMarketplaceLinker(conn)
+            results_df = linker.find_marketplace_matches(
                 search_criterion=search_criterion, # 'wb_sku', 'oz_sku', etc.
                 search_values=search_values,
                 selected_fields_map=selected_fields_map_for_query

@@ -166,55 +166,12 @@ def get_linked_ozon_skus_for_wb_sku(db_conn, wb_sku_list: list[str]) -> dict[str
     """
     For a list of WB SKUs, finds all linked Ozon SKUs via common barcodes.
     Returns a dictionary mapping each WB SKU to a list of its linked Ozon SKUs.
+    
+    ОБНОВЛЕНО: Теперь использует централизованный CrossMarketplaceLinker
+    для исключения дублирования логики связывания.
     """
-    if not wb_sku_list:
-        return {}
-
-    # Ensure WB SKUs are strings for helper functions
-    wb_sku_list_str = [str(sku) for sku in wb_sku_list]
-
-    wb_barcodes_df = get_normalized_wb_barcodes(db_conn, wb_skus=wb_sku_list_str)
-    if wb_barcodes_df.empty:
-        # st.info("Не найдены штрихкоды для указанных WB SKU.") # Can be noisy
-        return {}
-
-    # We need all Ozon barcodes to find matches
-    oz_barcodes_ids_df = get_ozon_barcodes_and_identifiers(db_conn)
-    if oz_barcodes_ids_df.empty:
-        # st.info("Не удалось загрузить штрихкоды Ozon для сопоставления.")
-        return {}
-
-    # Rename columns for clarity before merge
-    wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
-    oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
-    
-    # Ensure barcode columns are of the same type (string) to avoid merge issues
-    wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
-    oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
-    
-    # Keep only relevant columns and drop duplicates before merge
-    wb_barcodes_df = wb_barcodes_df[['wb_sku', 'barcode']].drop_duplicates()
-    oz_barcodes_ids_df = oz_barcodes_ids_df[['oz_sku', 'barcode']].drop_duplicates()
-    
-    # Filter out empty barcodes
-    wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != '']
-    oz_barcodes_ids_df = oz_barcodes_ids_df[oz_barcodes_ids_df['barcode'] != '']
-
-    # Merge to find common barcodes
-    # We expect wb_sku to be string, and oz_sku from oz_barcodes_ids_df is likely int, convert for consistency
-    oz_barcodes_ids_df['oz_sku'] = oz_barcodes_ids_df['oz_sku'].astype(str)
-    wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
-
-
-    merged_df = pd.merge(wb_barcodes_df, oz_barcodes_ids_df, on='barcode', how='inner')
-
-    if merged_df.empty:
-        # st.info("Не найдено совпадений Ozon SKU для указанных WB SKU по штрихкодам.")
-        return {}
-
-    # Group by wb_sku and collect all unique linked oz_sku
-    linked_skus_map = merged_df.groupby('wb_sku')['oz_sku'].apply(lambda x: list(set(x))).to_dict()
-    return linked_skus_map
+    from utils.cross_marketplace_linker import get_wb_to_oz_links
+    return get_wb_to_oz_links(db_conn, wb_sku_list)
 
 
 if st.button("🔍 Получить статистику", type="primary"): # Changed button label

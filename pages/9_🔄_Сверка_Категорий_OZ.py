@@ -123,6 +123,9 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
     """
     Finds linked products between marketplaces and gets their categories.
     
+    ОБНОВЛЕНО: Теперь использует централизованный CrossMarketplaceLinker
+    для исключения дублирования логики связывания.
+    
     Args:
         db_conn: Database connection
         input_skus: List of SKUs to search for
@@ -147,167 +150,17 @@ def find_linked_products_with_categories(db_conn, input_skus, search_by="wb_sku"
             st.error(f"Соединение с базой данных потеряно: {e}")
             return pd.DataFrame()
         
-        if search_by == "wb_sku":
-            # Find linked Ozon products via barcodes
-            try:
-                # Get raw barcodes from WB
-                wb_raw_query = f"""
-                SELECT DISTINCT wb_sku, wb_barcodes
-                FROM wb_products 
-                WHERE wb_sku IN ({', '.join(['?'] * len(input_skus))})
-                    AND NULLIF(TRIM(wb_barcodes), '') IS NOT NULL
-                """
-                wb_raw_df = db_conn.execute(wb_raw_query, input_skus).fetchdf()
-                
-                # Normalize barcodes by splitting on semicolon
-                wb_barcodes_data = []
-                for _, row in wb_raw_df.iterrows():
-                    wb_sku = str(row['wb_sku'])
-                    barcodes_str = str(row['wb_barcodes'])
-                    # Split by semicolon and clean each barcode
-                    individual_barcodes = [b.strip() for b in barcodes_str.split(';') if b.strip()]
-                    for barcode in individual_barcodes:
-                        wb_barcodes_data.append({'wb_sku': wb_sku, 'individual_barcode_wb': barcode})
-                
-                wb_barcodes_df = pd.DataFrame(wb_barcodes_data)
-                
-            except Exception as e:
-                st.error(f"Ошибка при получении штрихкодов WB: {e}")
-                return pd.DataFrame()
-                
-            if wb_barcodes_df.empty:
-                st.info("Не найдены штрихкоды для указанных артикулов WB")
-                return pd.DataFrame()
-            
-            try:
-                oz_barcodes_ids_df = get_ozon_barcodes_and_identifiers(db_conn)
-            except Exception as e:
-                st.error(f"Ошибка при получении штрихкодов Ozon: {e}")
-                return pd.DataFrame()
-                
-            if oz_barcodes_ids_df.empty:
-                st.info("В базе данных отсутствуют штрихкоды Ozon")
-                return pd.DataFrame()
-            
-            # Prepare data for merge
-            wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
-            oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
-            
-            # Ensure barcode consistency
-            wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
-            oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
-            wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
-            oz_barcodes_ids_df['oz_sku'] = oz_barcodes_ids_df['oz_sku'].astype(str)
-            
-            # Remove empty barcodes and duplicates
-            wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
-            oz_barcodes_ids_df = oz_barcodes_ids_df[oz_barcodes_ids_df['barcode'] != ''].drop_duplicates()
-            
-            # Join on common barcodes
-            linked_df = pd.merge(wb_barcodes_df, oz_barcodes_ids_df, on='barcode', how='inner')
-            
-            if linked_df.empty:
-                return pd.DataFrame()
-            
-            # Get WB categories
-            wb_skus_list = linked_df['wb_sku'].unique().tolist()
-            wb_categories_query = f"""
-            SELECT wb_sku, wb_category 
-            FROM wb_products 
-            WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_list))})
-            """
-            wb_categories_df = db_conn.execute(wb_categories_query, wb_skus_list).fetchdf()
-            wb_categories_df['wb_sku'] = wb_categories_df['wb_sku'].astype(str)
-            
-            # Get Ozon categories (from oz_category_products table via oz_vendor_code)
-            # and link oz_vendor_code to oz_sku using oz_products table
-            oz_vendor_codes_list = linked_df['oz_vendor_code'].unique().tolist()
-            oz_categories_query = f"""
-            SELECT DISTINCT
-                cp.oz_vendor_code, 
-                cp.type as oz_category,
-                p.oz_sku
-            FROM oz_category_products cp
-            LEFT JOIN oz_products p ON cp.oz_vendor_code = p.oz_vendor_code
-            WHERE cp.oz_vendor_code IN ({', '.join(['?'] * len(oz_vendor_codes_list))})
-            """
-            oz_categories_df = db_conn.execute(oz_categories_query, oz_vendor_codes_list).fetchdf()
-            if 'oz_sku' in oz_categories_df.columns:
-                oz_categories_df['oz_sku'] = oz_categories_df['oz_sku'].astype(str)
-            
-            # Merge all data
-            result_df = linked_df[['wb_sku', 'oz_sku', 'oz_vendor_code', 'barcode']].drop_duplicates()
-            result_df = pd.merge(result_df, wb_categories_df, on='wb_sku', how='left')
-            result_df = pd.merge(result_df, oz_categories_df, on='oz_vendor_code', how='left')
-            
-            # Update oz_sku from the category join if it's more accurate
-            result_df['oz_sku'] = result_df['oz_sku_y'].fillna(result_df['oz_sku_x'])
-            result_df = result_df.drop(columns=['oz_sku_x', 'oz_sku_y'], errors='ignore')
-            
-            # Remove duplicates by keeping unique combinations of wb_sku, oz_sku, oz_vendor_code
-            # This will eliminate duplicate rows caused by multiple barcodes for the same product pair
-            result_df = result_df.drop_duplicates(subset=['wb_sku', 'oz_sku', 'oz_vendor_code'], keep='first')
-            
-        else:  # search_by == "oz_sku"
-            # Similar logic but starting from Ozon SKUs
-            oz_skus_for_query = list(set(input_skus))
-            
-            # Get Ozon products with categories and barcodes
-            # Use oz_products as the main table and join categories via oz_vendor_code
-            oz_query = f"""
-            SELECT DISTINCT
-                p.oz_sku,
-                p.oz_vendor_code,
-                cp.type as oz_category,
-                b.oz_barcode as barcode
-            FROM oz_products p
-            LEFT JOIN (
-                SELECT DISTINCT oz_vendor_code, type 
-                FROM oz_category_products 
-                WHERE type IS NOT NULL
-            ) cp ON p.oz_vendor_code = cp.oz_vendor_code
-            LEFT JOIN oz_barcodes b ON p.oz_product_id = b.oz_product_id
-            WHERE p.oz_sku IN ({', '.join(['?'] * len(oz_skus_for_query))})
-                AND NULLIF(TRIM(b.oz_barcode), '') IS NOT NULL
-            """
-            
-            oz_data_df = db_conn.execute(oz_query, oz_skus_for_query).fetchdf()
-            
-            if oz_data_df.empty:
-                return pd.DataFrame()
-            
-            # Get WB products with same barcodes
-            wb_query = f"""
-            SELECT DISTINCT
-                p.wb_sku,
-                p.wb_category,
-                p.wb_barcodes AS barcode
-            FROM wb_products p
-            WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL
-            """
-            
-            wb_data_df = db_conn.execute(wb_query).fetchdf()
-            
-            if wb_data_df.empty:
-                return pd.DataFrame()
-            
-            # Ensure data types
-            oz_data_df['barcode'] = oz_data_df['barcode'].astype(str).str.strip()
-            wb_data_df['barcode'] = wb_data_df['barcode'].astype(str).str.strip()
-            oz_data_df['oz_sku'] = oz_data_df['oz_sku'].astype(str)
-            wb_data_df['wb_sku'] = wb_data_df['wb_sku'].astype(str)
-            
-            # Remove empty barcodes
-            oz_data_df = oz_data_df[oz_data_df['barcode'] != ''].drop_duplicates()
-            wb_data_df = wb_data_df[wb_data_df['barcode'] != ''].drop_duplicates()
-            
-            # Join on common barcodes
-            result_df = pd.merge(oz_data_df, wb_data_df, on='barcode', how='inner')
-            
-            # Remove duplicates by keeping unique combinations of wb_sku, oz_sku, oz_vendor_code
-            # This will eliminate duplicate rows caused by multiple barcodes for the same product pair
-            if not result_df.empty:
-                result_df = result_df.drop_duplicates(subset=['wb_sku', 'oz_sku', 'oz_vendor_code'], keep='first')
+        # Use centralized linker for finding linked products with categories
+        from utils.cross_marketplace_linker import CrossMarketplaceLinker
+        linker = CrossMarketplaceLinker(db_conn)
+        
+        result_df = linker.get_links_with_categories(input_skus, search_by=search_by)
+        
+        if result_df.empty:
+            if search_by == "wb_sku":
+                st.info("Не найдено связанных товаров Ozon для указанных WB SKU")
+            else:
+                st.info("Не найдено связанных товаров WB для указанных Ozon SKU")
         
         return result_df
         
