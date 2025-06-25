@@ -915,8 +915,11 @@ def test_wb_sku_connections(conn, wb_sku: str, show_debug: bool = True) -> dict:
         wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
         oz_barcodes_df['barcode'] = oz_barcodes_df['barcode'].astype(str).str.strip()
         
-        wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
-        oz_barcodes_df = oz_barcodes_df[oz_barcodes_df['barcode'] != ''].drop_duplicates()
+        # Используем централизованную утилиту для очистки данных
+        from utils.data_cleaning import DataCleaningUtils
+        wb_barcodes_df, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
+            wb_barcodes_df, oz_barcodes_df
+        )
         
         linked_df = pd.merge(wb_barcodes_df, oz_barcodes_df, on='barcode', how='inner')
         

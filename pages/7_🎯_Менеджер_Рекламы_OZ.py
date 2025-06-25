@@ -88,16 +88,69 @@ def get_ozon_product_details(db_conn, oz_sku_list: list[str]) -> pd.DataFrame:
         st.error(f"Ошибка при получении данных Ozon продуктов: {e}")
         return pd.DataFrame()
 
+def get_oz_product_types(db_conn, oz_vendor_codes: list[str]) -> pd.DataFrame:
+    """
+    Gets product types from oz_category_products table for Ozon vendor codes.
+    
+    Args:
+        db_conn: Database connection
+        oz_vendor_codes: List of Ozon vendor codes
+        
+    Returns:
+        DataFrame with oz_vendor_code, product_type
+    """
+    if not oz_vendor_codes:
+        return pd.DataFrame()
+    
+    try:
+        # Проверяем наличие таблицы oz_category_products
+        table_check_query = "SELECT name FROM pragma_table_info('oz_category_products')"
+        try:
+            table_info = db_conn.execute(table_check_query).fetchdf()
+            if table_info.empty:
+                st.info("Таблица oz_category_products не найдена")
+                return pd.DataFrame()
+        except:
+            st.info("Таблица oz_category_products не найдена")
+            return pd.DataFrame()
+        
+        # Убираем пустые значения и дубликаты из vendor codes
+        clean_vendor_codes = [str(vc).strip() for vc in oz_vendor_codes if str(vc).strip()]
+        if not clean_vendor_codes:
+            return pd.DataFrame()
+        
+        # Получаем типы продуктов из oz_category_products
+        query = f"""
+        SELECT DISTINCT
+            oz_vendor_code,
+            type as product_type
+        FROM oz_category_products 
+        WHERE oz_vendor_code IN ({', '.join(['?'] * len(clean_vendor_codes))})
+            AND NULLIF(TRIM(type), '') IS NOT NULL
+        """
+        
+        types_df = db_conn.execute(query, clean_vendor_codes).fetchdf()
+        types_df['oz_vendor_code'] = types_df['oz_vendor_code'].astype(str)
+        
+        return types_df
+        
+    except Exception as e:
+        st.error(f"Ошибка при получении типов продуктов из oz_category_products: {e}")
+        return pd.DataFrame()
+
 def get_punta_data_for_rk(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
     """
     Gets Punta reference data for WB SKUs with specific columns for RK manager.
+    
+    ИСПРАВЛЕНИЕ: Теперь возвращает только gender, season, material из Punta.
+    Поле wb_object (предмет) теперь получается из oz_category_products.type.
     
     Args:
         db_conn: Database connection
         wb_sku_list: List of WB SKUs
         
     Returns:
-        DataFrame with wb_sku, gender, season, material, wb_object
+        DataFrame with wb_sku, gender, season, material (без wb_object)
     """
     if not wb_sku_list:
         return pd.DataFrame()
@@ -149,12 +202,16 @@ def get_punta_data_for_rk(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
         if 'material' in punta_df.columns:
             punta_df['material'] = punta_df['material'].apply(convert_material_to_short)
         
+        # ИСПРАВЛЕНИЕ: Убираем wb_object из списка возвращаемых колонок
+        # wb_object теперь получается из oz_category_products.type
+        target_columns_without_object = ['wb_sku', 'gender', 'season', 'material']
+        
         # Fill missing columns with empty strings
-        for col in target_columns:
+        for col in target_columns_without_object:
             if col not in punta_df.columns:
                 punta_df[col] = ""
         
-        return punta_df[target_columns]
+        return punta_df[target_columns_without_object]
         
     except Exception as e:
         st.error(f"Ошибка при получении данных Punta: {e}")
@@ -188,7 +245,8 @@ def calculate_total_stock_by_wb_sku(db_conn, wb_sku_list: list[str]) -> pd.DataF
         wb_barcodes_df = wb_barcodes_df.rename(columns={'individual_barcode_wb': 'barcode'})
         oz_barcodes_ids_df = oz_barcodes_ids_df.rename(columns={'oz_barcode': 'barcode'})
         
-        # Ensure barcode consistency
+        # ИСПРАВЛЕНИЕ: Нормализуем данные для корректного связывания без дублей
+        # Приводим штрихкоды к строковому типу и убираем пробелы (строка 191)
         wb_barcodes_df['barcode'] = wb_barcodes_df['barcode'].astype(str).str.strip()
         oz_barcodes_ids_df['barcode'] = oz_barcodes_ids_df['barcode'].astype(str).str.strip()
         wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
@@ -203,6 +261,10 @@ def calculate_total_stock_by_wb_sku(db_conn, wb_sku_list: list[str]) -> pd.DataF
         
         if merged_df.empty:
             return pd.DataFrame()
+        
+        # ИСПРАВЛЕНИЕ: Удаляем дубликаты по wb_sku-oz_sku связкам ПЕРЕД подсчетом остатков
+        # Это критично для корректного расчета остатков
+        merged_df = merged_df.drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
         
         # Get stock data for found Ozon SKUs
         oz_skus_for_query = list(merged_df['oz_sku'].unique())
@@ -221,6 +283,9 @@ def calculate_total_stock_by_wb_sku(db_conn, wb_sku_list: list[str]) -> pd.DataF
         # Merge stock data with mappings
         merged_with_stock_df = pd.merge(merged_df, stock_df, on='oz_sku', how='left')
         merged_with_stock_df['oz_fbo_stock'] = merged_with_stock_df['oz_fbo_stock'].fillna(0)
+        
+        # ИСПРАВЛЕНИЕ: Дополнительная проверка - удаляем дубликаты перед агрегацией
+        merged_with_stock_df = merged_with_stock_df.drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
         
         # Aggregate by wb_sku
         total_stock_df = merged_with_stock_df.groupby('wb_sku')['oz_fbo_stock'].sum().reset_index()
@@ -277,6 +342,10 @@ def calculate_total_orders_by_wb_sku(db_conn, wb_sku_list: list[str], days_back:
         if merged_df.empty:
             return pd.DataFrame()
         
+        # ИСПРАВЛЕНИЕ: Удаляем дубликаты по wb_sku-oz_sku связкам ПЕРЕД подсчетом заказов
+        # Это критично для корректного расчета заказов
+        merged_df = merged_df.drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
+        
         # Get order data for found Ozon SKUs
         oz_skus_for_query = list(merged_df['oz_sku'].unique())
         
@@ -302,6 +371,9 @@ def calculate_total_orders_by_wb_sku(db_conn, wb_sku_list: list[str], days_back:
         merged_with_orders_df = pd.merge(merged_df, orders_df, on='oz_sku', how='left')
         merged_with_orders_df['order_count'] = merged_with_orders_df['order_count'].fillna(0)
         
+        # ИСПРАВЛЕНИЕ: Дополнительная проверка - удаляем дубликаты перед агрегацией
+        merged_with_orders_df = merged_with_orders_df.drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
+        
         # Aggregate by wb_sku
         total_orders_df = merged_with_orders_df.groupby('wb_sku')['order_count'].sum().reset_index()
         total_orders_df.columns = ['wb_sku', 'total_orders_wb_sku']
@@ -319,6 +391,9 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     For a list of WB SKUs, finds all linked Ozon SKUs via common barcodes
     and enriches with comprehensive product data for advertising campaign selection.
     
+    ИСПРАВЛЕНИЕ: Поле wb_object (предмет) теперь получается из oz_category_products.type
+    по oz_vendor_code вместо данных Punta.
+    
     Returns DataFrame with columns:
     - group_num: Group number (starting from 1)
     - wb_sku: WB SKU
@@ -330,7 +405,7 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     - gender: Gender from Punta
     - season: Season from Punta
     - material: Material from Punta
-    - wb_object: Object type from Punta
+    - wb_object: Object type from oz_category_products.type (по oz_vendor_code)
     - total_stock_wb_sku: Total stock for entire WB SKU
     - total_orders_wb_sku: Total orders for entire WB SKU (14 days)
     """
@@ -350,8 +425,8 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
         st.info("Не найдено совпадений Ozon SKU для указанных WB SKU по штрихкодам.")
         return pd.DataFrame()
 
-    # Get unique WB-Ozon SKU pairs from centralized results
-    sku_pairs_df = linked_df[['wb_sku', 'oz_sku']].drop_duplicates()
+    # ИСПРАВЛЕНИЕ: Получаем уникальные пары WB-Ozon SKU с более агрессивной дедупликацией
+    sku_pairs_df = linked_df[['wb_sku', 'oz_sku']].drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
     
     # Add group numbers
     group_mapping = {}
@@ -376,9 +451,17 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     # Get individual orders for last 14 days
     orders_df = get_ozon_orders_14_days(db_conn, oz_skus_for_query)
     
-    # Get Punta reference data
+    # Get Punta reference data (for gender, season, material)
     unique_wb_skus = list(sku_pairs_df['wb_sku'].unique())
     punta_df = get_punta_data_for_rk(db_conn, unique_wb_skus)
+    
+    # ИСПРАВЛЕНИЕ: Получаем типы продуктов (предметы) из oz_category_products
+    # Используем oz_vendor_code из Ozon продуктов вместо wb_object из Punta
+    unique_oz_vendor_codes = []
+    if not ozon_details_df.empty and 'oz_vendor_code' in ozon_details_df.columns:
+        unique_oz_vendor_codes = [code for code in ozon_details_df['oz_vendor_code'].unique() if str(code).strip()]
+    
+    product_types_df = get_oz_product_types(db_conn, unique_oz_vendor_codes)
     
     # Get total stock by WB SKU
     total_stock_df = calculate_total_stock_by_wb_sku(db_conn, unique_wb_skus)
@@ -403,13 +486,21 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     else:
         result_df['oz_orders_14'] = 0
     
-    # Merge Punta data
+    # Merge Punta data (gender, season, material)
     if not punta_df.empty:
         result_df = pd.merge(result_df, punta_df, on='wb_sku', how='left')
     else:
         result_df['gender'] = ""
         result_df['season'] = ""
         result_df['material'] = ""
+    
+    # ИСПРАВЛЕНИЕ: Объединяем данные о типах продуктов из oz_category_products
+    # Получаем "Предмет" по oz_vendor_code вместо wb_object из Punta
+    if not product_types_df.empty:
+        result_df = pd.merge(result_df, product_types_df, on='oz_vendor_code', how='left')
+        result_df['wb_object'] = result_df['product_type'].fillna("")
+        result_df = result_df.drop('product_type', axis=1)  # Убираем промежуточную колонку
+    else:
         result_df['wb_object'] = ""
     
     # Merge total stock data

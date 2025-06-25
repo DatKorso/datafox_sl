@@ -199,6 +199,7 @@ def analyze_category_discrepancies(db_conn, linked_products_df, show_all=False):
         
         for _, row in linked_products_df.iterrows():
             wb_category = row.get('wb_category', '')
+            wb_brand = row.get('wb_brand', '')
             oz_category = row.get('oz_category', '')
             
             if pd.isna(wb_category) or pd.isna(oz_category):
@@ -209,6 +210,7 @@ def analyze_category_discrepancies(db_conn, linked_products_df, show_all=False):
                         'oz_vendor_code': row.get('oz_vendor_code', ''),
                         'barcode': row['barcode'],
                         'wb_category': str(wb_category) if not pd.isna(wb_category) else 'Нет данных',
+                        'wb_brand': str(wb_brand) if not pd.isna(wb_brand) else 'Нет данных',
                         'oz_category_actual': str(oz_category) if not pd.isna(oz_category) else 'Нет данных',
                         'oz_category_expected': 'Нет данных',
                         'discrepancy_type': 'Отсутствуют данные о категориях',
@@ -232,6 +234,7 @@ def analyze_category_discrepancies(db_conn, linked_products_df, show_all=False):
                             'oz_vendor_code': row.get('oz_vendor_code', ''),
                             'barcode': row['barcode'],
                             'wb_category': wb_category,
+                            'wb_brand': str(wb_brand) if not pd.isna(wb_brand) else 'Нет данных',
                             'oz_category_actual': oz_category,
                             'oz_category_expected': expected_oz_category,
                             'discrepancy_type': 'Категории соответствуют',
@@ -245,6 +248,7 @@ def analyze_category_discrepancies(db_conn, linked_products_df, show_all=False):
                         'oz_vendor_code': row.get('oz_vendor_code', ''),
                         'barcode': row['barcode'],
                         'wb_category': wb_category,
+                        'wb_brand': str(wb_brand) if not pd.isna(wb_brand) else 'Нет данных',
                         'oz_category_actual': oz_category,
                         'oz_category_expected': expected_oz_category,
                         'discrepancy_type': 'Несоответствие категорий',
@@ -258,6 +262,7 @@ def analyze_category_discrepancies(db_conn, linked_products_df, show_all=False):
                     'oz_vendor_code': row.get('oz_vendor_code', ''),
                     'barcode': row['barcode'],
                     'wb_category': wb_category,
+                    'wb_brand': str(wb_brand) if not pd.isna(wb_brand) else 'Нет данных',
                     'oz_category_actual': oz_category,
                     'oz_category_expected': 'Не настроено',
                     'discrepancy_type': 'Отсутствует соответствие',
@@ -379,7 +384,7 @@ with tab1:
                                 # Display results
                                 display_columns = [
                                     'status', 'wb_sku', 'oz_sku', 'oz_vendor_code', 
-                                    'wb_category', 'oz_category_actual', 'oz_category_expected',
+                                    'wb_category', 'wb_brand', 'oz_category_actual', 'oz_category_expected',
                                     'discrepancy_type'
                                 ]
                                 
@@ -401,6 +406,7 @@ with tab1:
                                         'oz_sku': 'Ozon SKU', 
                                         'oz_vendor_code': 'Код поставщика',
                                         'wb_category': 'Категория WB',
+                                        'wb_brand': 'Бренд WB',
                                         'oz_category_actual': 'Категория Ozon (факт)',
                                         'oz_category_expected': 'Категория Ozon (ожидается)',
                                         'discrepancy_type': 'Описание'
@@ -440,16 +446,17 @@ with tab1:
                                             filtered_df[display_columns],
                                             use_container_width=True,
                                             hide_index=True,
-                                            column_config={
-                                                'status': st.column_config.TextColumn('Статус', width="small"),
-                                                'wb_sku': 'WB SKU',
-                                                'oz_sku': 'Ozon SKU', 
-                                                'oz_vendor_code': 'Код поставщика',
-                                                'wb_category': 'Категория WB',
-                                                'oz_category_actual': 'Категория Ozon (факт)',
-                                                'oz_category_expected': 'Категория Ozon (ожидается)',
-                                                'discrepancy_type': 'Описание'
-                                            }
+                                                                                    column_config={
+                                            'status': st.column_config.TextColumn('Статус', width="small"),
+                                            'wb_sku': 'WB SKU',
+                                            'oz_sku': 'Ozon SKU', 
+                                            'oz_vendor_code': 'Код поставщика',
+                                            'wb_category': 'Категория WB',
+                                            'wb_brand': 'Бренд WB',
+                                            'oz_category_actual': 'Категория Ozon (факт)',
+                                            'oz_category_expected': 'Категория Ozon (ожидается)',
+                                            'discrepancy_type': 'Описание'
+                                        }
                                         )
                                 
                                 # Export option

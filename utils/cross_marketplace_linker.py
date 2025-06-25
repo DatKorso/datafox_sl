@@ -72,9 +72,11 @@ class CrossMarketplaceLinker:
             wb_barcodes_df['wb_sku'] = wb_barcodes_df['wb_sku'].astype(str)
             oz_barcodes_df['oz_sku'] = oz_barcodes_df['oz_sku'].astype(str)
             
-            # Убираем пустые штрихкоды и дубликаты
-            wb_barcodes_df = wb_barcodes_df[wb_barcodes_df['barcode'] != ''].drop_duplicates()
-            oz_barcodes_df = oz_barcodes_df[oz_barcodes_df['barcode'] != ''].drop_duplicates()
+            # Убираем пустые штрихкоды и дубликаты (используем централизованную утилиту)
+            from utils.data_cleaning import DataCleaningUtils
+            wb_barcodes_df, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
+                wb_barcodes_df, oz_barcodes_df
+            )
             
             # Объединяем по общим штрихкодам
             linked_df = pd.merge(wb_barcodes_df, oz_barcodes_df, on='barcode', how='inner')
@@ -181,9 +183,15 @@ class CrossMarketplaceLinker:
         # Переименовываем колонку для ясности
         result_df = linked_df.rename(columns={'barcode': 'common_barcode'})
         
-        # Убираем дубликаты по основным связям
-        result_df = result_df.drop_duplicates(
-            subset=['wb_sku', 'oz_sku', 'oz_vendor_code'], 
+        # ИСПРАВЛЕНИЕ: Более агрессивное удаление дубликатов 
+        # Удаляем дубликаты сначала по основным связям wb_sku-oz_sku
+        result_df = result_df.drop_duplicates(subset=['wb_sku', 'oz_sku'], keep='first')
+        
+        # Затем удаляем дубликаты по более широкому набору колонок  
+        from utils.data_cleaning import DataCleaningUtils
+        result_df = DataCleaningUtils.remove_duplicates_by_columns(
+            result_df, 
+            subset_columns=['wb_sku', 'oz_sku', 'oz_vendor_code'], 
             keep='first'
         )
         
@@ -280,7 +288,7 @@ class CrossMarketplaceLinker:
         Returns:
             DataFrame со связанными товарами и их категориями:
             - wb_sku, oz_sku, oz_vendor_code, barcode (общий штрихкод)
-            - wb_category, oz_category
+            - wb_category, wb_brand, oz_category
         """
         if not input_skus:
             return pd.DataFrame()
@@ -292,10 +300,10 @@ class CrossMarketplaceLinker:
                 if linked_df.empty:
                     return pd.DataFrame()
                 
-                # Добавляем категории WB
+                # Добавляем категории и бренды WB
                 wb_skus_list = linked_df['wb_sku'].unique().tolist()
                 wb_categories_query = f"""
-                SELECT wb_sku, wb_category 
+                SELECT wb_sku, wb_category, wb_brand 
                 FROM wb_products 
                 WHERE wb_sku IN ({', '.join(['?'] * len(wb_skus_list))})
                 """
@@ -375,7 +383,7 @@ class CrossMarketplaceLinker:
                 # Объединяем по общим штрихкодам
                 result_df = pd.merge(
                     oz_data_df, 
-                    wb_barcodes_df[['wb_sku', 'wb_category', 'barcode']], 
+                    wb_barcodes_df[['wb_sku', 'wb_category', 'wb_brand', 'barcode']], 
                     on='barcode', 
                     how='inner'
                 )
@@ -505,7 +513,7 @@ class CrossMarketplaceLinker:
         try:
             # Получаем сырые штрихкоды WB
             wb_raw_query = """
-            SELECT DISTINCT wb_sku, wb_barcodes, wb_category
+            SELECT DISTINCT wb_sku, wb_barcodes, wb_category, wb_brand
             FROM wb_products 
             WHERE NULLIF(TRIM(wb_barcodes), '') IS NOT NULL
             """
@@ -516,6 +524,7 @@ class CrossMarketplaceLinker:
             for _, row in wb_raw_df.iterrows():
                 wb_sku = str(row['wb_sku'])
                 wb_category = row['wb_category']
+                wb_brand = row['wb_brand']
                 barcodes_str = str(row['wb_barcodes'])
                 # Разделяем по точке с запятой и очищаем каждый штрихкод
                 individual_barcodes = [b.strip() for b in barcodes_str.split(';') if b.strip()]
@@ -523,7 +532,8 @@ class CrossMarketplaceLinker:
                     wb_barcodes_data.append({
                         'wb_sku': wb_sku, 
                         'individual_barcode_wb': barcode,
-                        'wb_category': wb_category
+                        'wb_category': wb_category,
+                        'wb_brand': wb_brand
                     })
             
             return pd.DataFrame(wb_barcodes_data)
@@ -672,7 +682,28 @@ class CrossMarketplaceLinker:
                 
                 result_data.append(result_row)
             
-            return pd.DataFrame(result_data)
+            results_df = pd.DataFrame(result_data)
+            
+            # ИСПРАВЛЕНИЕ: Дополнительное удаление дубликатов в результатах поиска
+            # Особенно важно для поиска по oz_vendor_code, где могут быть дубликаты
+            if not results_df.empty:
+                # Удаляем дубликаты по ключевым полям в зависимости от типа поиска
+                if search_criterion == 'oz_vendor_code':
+                    # При поиске по vendor_code удаляем дубликаты по wb_sku
+                    wb_sku_col = None
+                    for label, detail in selected_fields_map.items():
+                        if isinstance(detail, tuple) and detail == ('wb_products', 'wb_sku'):
+                            wb_sku_col = label
+                            break
+                    
+                    if wb_sku_col and wb_sku_col in results_df.columns:
+                        # Удаляем дубликаты по wb_sku, оставляя первое вхождение
+                        results_df = results_df.drop_duplicates(subset=[wb_sku_col], keep='first')
+                else:
+                    # Для других типов поиска удаляем полные дубликаты
+                    results_df = results_df.drop_duplicates()
+            
+            return results_df
             
         except Exception as e:
             st.error(f"Ошибка поиска между маркетплейсами: {e}")
