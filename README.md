@@ -1,71 +1,95 @@
-## Features
+# DataFox SL - Marketplace Analytics Platform
 
-- 📊 **Multi-marketplace Data Analysis**: Import and analyze data from Ozon and Wildberries
-- 🔍 **Cross-marketplace Search**: Find linked products via common barcodes
-- 🎯 **Advertising Campaign Management**: Automated candidate selection for Ozon campaigns
-- 📈 **Performance Analytics**: Order statistics and stock analysis
-- 🔄 **Data Import/Export**: Support for Excel, CSV, and Google Sheets
-- ⚙️ **Flexible Configuration**: Customizable paths and settings
-- 🚀 **Real-time Integration**: Direct import from Google Sheets documents
-- 📋 **Custom Analytic Reports**: Automated Excel report generation with cross-marketplace data
-- 🔄 **Universal Punta Table**: Dynamic schema adaptation for any Google Sheets structure
-- 🖼️ **Product Images Integration**: Automatic Wildberries product image loading in reports (NEW!)
+Платформа для анализа данных маркетплейсов (Ozon, Wildberries) с инструментами для работы с товарными карточками, статистикой заказов и cross-marketplace поиском.
 
-## Quick Start
+## 🚀 Основные возможности
 
-### Universal Punta Table (New!)
-The system now supports a universal `punta_table` that automatically adapts to any Google Sheets structure:
+### 📊 Анализ и статистика
+- **Статистика заказов Ozon** - детальный анализ продаж по SKU и временным периодам
+- **Аналитические отчеты** - автоматическая генерация Excel отчетов с интеграцией справочных данных
+- **Cross-marketplace поиск** - поиск связей между товарами на разных маркетплейсах
 
-1. **Prepare your Google Sheets**:
-   - First row: Column headers (any names you want)
-   - Required: `wb_sku` column for linking with other data
-   - Optional: Any additional columns (gender, season, model_name, etc.)
+### 🚨 Качество данных и карточек
+- **Анализ проблем карточек** - выявление ошибок в товарных карточках Ozon
+- **🆕 Сравнение расхождений названий цветов** - инструмент для выявления inconsistent данных в поле `color_name` в рамках одного WB SKU
+- **Сверка категорий** - проверка соответствия категорий между маркетплейсами
+- **Cards Matcher** - склейка карточек товаров по различным критериям
 
-2. **Import process**:
-   - Go to Settings → Google Sheets Integration
-   - Paste your Google Sheets URL
-   - Go to Import Reports → Select "punta_table"
-   - Click Import - the system will automatically:
-     - Detect your column structure
-     - Create table schema dynamically
-     - Convert wb_sku to INTEGER format
-     - Clean and validate data
+### 🔧 Управление данными
+- **Импорт отчетов** - загрузка и обработка данных из различных источников
+- **Просмотр базы данных** - интерактивный просмотр всех таблиц
+- **Google Sheets интеграция** - работа с внешними справочниками
 
-3. **Use in reports**:
-   - All columns become available as PUNTA_columnname in Excel reports
-   - Example: `season` column → `PUNTA_season` in Excel
-   - Automatic detection and filling of all PUNTA_ columns
+## 🆕 Новая функциональность: Анализ расхождений цветов
 
-### Custom Analytic Reports
-1. **Prepare your Excel file**:
-   - Create a file with 'analytic_report' sheet
-   - Row 7: Headers (N, WB_SKU, OZ_SIZE_27, OZ_SIZE_28, ..., OZ_SIZES, OZ_STOCK, ORDERS_TODAY-30, ...)
-   - Row 8: Descriptions (ignored during processing)
-   - Rows 9+: Your WB SKU data
+### Что это решает:
+- **Inconsistent данные**: Один WB SKU может иметь несколько связанных товаров Ozon с разными названиями цветов
+- **Путаница для покупателей**: Разные названия цветов снижают конверсию
+- **Quality control**: Помогает стандартизировать данные и улучшить качество карточек
 
-2. **Configure in application**:
-   - Go to Settings → Custom Reports
-   - Set path to your analytic report file
-   - Or use file upload feature
+### Как работает:
+1. **Ввод WB SKU** → Поиск связанных товаров Ozon через общие штрихкоды
+2. **Анализ данных** → Извлечение `color_name` из таблицы `oz_category_products`  
+3. **Выявление расхождений** → Сравнение названий цветов в рамках каждого WB SKU
+4. **Отчетность** → Статистика, детальные таблицы и экспорт результатов
 
-3. **Process report**:
-   - Go to Custom Analytic Report Generation
-   - Select your file or use configured path
-   - Click "Process Report" to automatically fill all data
-   - System creates backup and updates original file
+### Пример результата:
+```
+WB SKU 12345: 3 разных названия цвета
+- Товар A: "Красный"
+- Товар B: "Алый" 
+- Товар C: "Бордо"
 
-### Google Sheets Integration
-1. **Prepare your Google Sheets document**:
-   - Ensure public access or "anyone with link can view"
-   - First row: Column headers
-   - Required: wb_sku column
-   - Optional: Any additional data columns
+Рекомендация: Стандартизировать к "Красный"
+```
 
-2. **Configure in application**:
-   - Go to Settings → Google Sheets Integration
-   - Paste your Google Sheets URL
-   - Test connection and preview data
+## 🛠️ Технические особенности
 
-3. **Import data**:
-   - Go to Import Reports → Select "punta_table"
-   - Click Import to sync data automatically with dynamic schema detection 
+### Архитектура
+- **Backend**: Python + DuckDB
+- **Frontend**: Streamlit
+- **Data Processing**: Pandas
+- **Cross-marketplace linking**: Централизованный модуль `CrossMarketplaceLinker`
+
+### Структура проекта
+```
+datafox_sl/
+├── app.py                  # Главная страница приложения
+├── pages/                  # Модули функциональности
+│   ├── 12_🚨_Проблемы_Карточек_OZ.py  # Анализ проблем + новый инструмент
+│   └── ...
+├── utils/                  # Вспомогательные модули
+│   ├── cross_marketplace_linker.py     # Связка между маркетплейсами  
+│   ├── db_connection.py                # Подключение к БД
+│   └── ...
+└── project-docs/          # Документация
+    ├── user-guides/       # Руководства пользователя
+    └── technical/         # Техническая документация
+```
+
+## 🚀 Быстрый старт
+
+1. **Настройка подключения к БД** в разделе "Настройки"
+2. **Импорт данных** через "Импорт отчетов МП"
+3. **Анализ проблем карточек** → "Инструмент сравнения расхождений названий цветов"
+4. **Ввод WB SKU** для анализа расхождений
+5. **Изучение результатов** и экспорт данных
+
+## 📚 Документация
+
+- [Руководство по анализу проблем карточек](project-docs/user-guides/card-problems.md)
+- [Техническая документация](project-docs/technical/)
+- [Обзор проекта](project-docs/overview.md)
+
+## 🔄 Последние обновления
+
+### Новый инструмент анализа расхождений:
+- ✅ Поиск связей WB SKU ↔ Ozon товары
+- ✅ Анализ поля `color_name` на inconsistency  
+- ✅ Статистика и детальные отчеты
+- ✅ Фильтрация и экспорт результатов
+- ✅ Подробная документация и примеры использования
+
+---
+
+**DataFox SL** - ваш инструмент для эффективного управления данными маркетплейсов и повышения качества товарных карточек. 
