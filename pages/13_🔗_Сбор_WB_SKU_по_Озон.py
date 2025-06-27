@@ -201,23 +201,24 @@ if 'collection_result' in st.session_state:
         )
     
     with col2:
+        oz_with_wb = result.stats['total_oz_skus_processed'] - len(result.no_links_oz_skus)
         st.metric(
             "✅ OZ SKU со связями",
-            result.stats['oz_skus_with_wb_links'],
+            oz_with_wb,
             help="Количество oz_sku для которых найдены соответствующие wb_sku"
         )
     
     with col3:
         st.metric(
             "❌ OZ SKU без связей",
-            result.stats['oz_skus_without_wb_links'],
+            len(result.no_links_oz_skus),
             help="Количество oz_sku для которых НЕ найдены wb_sku"
         )
     
     with col4:
         st.metric(
             "🔀 Дубликаты связей",
-            result.stats['duplicate_mappings_count'],
+            len(result.duplicate_mappings),
             help="Количество oz_sku связанных с несколькими wb_sku"
         )
     
