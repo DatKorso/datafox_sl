@@ -379,8 +379,43 @@ def collect_wb_skus_for_all_oz_products(connection: duckdb.DuckDBPyConnection) -
     Returns:
         WbSkuCollectionResult с результатами сбора
     """
-    collector = OzToWbCollector(connection)
-    return collector.collect_wb_skus_for_oz_assortment()
+    try:
+        # Получаем весь ассортимент из oz_products
+        all_oz_query = "SELECT DISTINCT CAST(oz_sku AS VARCHAR) as oz_sku FROM oz_products WHERE oz_sku IS NOT NULL"
+        all_oz_result = connection.execute(all_oz_query).fetchdf()
+        
+        if all_oz_result.empty:
+            return WbSkuCollectionResult(
+                wb_skus=[],
+                no_links_oz_skus=[],
+                duplicate_mappings=[],
+                stats={
+                    'total_oz_skus_processed': 0,
+                    'oz_skus_with_barcodes': 0,
+                    'unique_wb_skus_found': 0,
+                    'total_barcode_matches': 0,
+                    'processing_time_seconds': 0.0
+                }
+            )
+        
+        oz_skus = all_oz_result['oz_sku'].tolist()
+        collector = OzToWbCollector(connection)
+        return collector.collect_wb_skus_for_oz_assortment(oz_skus)
+        
+    except Exception as e:
+        st.error(f"Ошибка при сборе wb_sku для всего ассортимента: {e}")
+        return WbSkuCollectionResult(
+            wb_skus=[],
+            no_links_oz_skus=[],
+            duplicate_mappings=[],
+            stats={
+                'total_oz_skus_processed': 0,
+                'oz_skus_with_barcodes': 0,
+                'unique_wb_skus_found': 0,
+                'total_barcode_matches': 0,
+                'processing_time_seconds': 0.0
+            }
+        )
 
 
 def collect_wb_skus_for_oz_list(
@@ -397,5 +432,35 @@ def collect_wb_skus_for_oz_list(
     Returns:
         WbSkuCollectionResult с результатами сбора
     """
-    collector = OzToWbCollector(connection)
-    return collector.collect_wb_skus_for_oz_assortment(oz_skus) 
+    try:
+        if not oz_skus:
+            return WbSkuCollectionResult(
+                wb_skus=[],
+                no_links_oz_skus=[],
+                duplicate_mappings=[],
+                stats={
+                    'total_oz_skus_processed': 0,
+                    'oz_skus_with_barcodes': 0,
+                    'unique_wb_skus_found': 0,
+                    'total_barcode_matches': 0,
+                    'processing_time_seconds': 0.0
+                }
+            )
+        
+        collector = OzToWbCollector(connection)
+        return collector.collect_wb_skus_for_oz_assortment(oz_skus)
+        
+    except Exception as e:
+        st.error(f"Ошибка при сборе wb_sku для списка oz_sku: {e}")
+        return WbSkuCollectionResult(
+            wb_skus=[],
+            no_links_oz_skus=[],
+            duplicate_mappings=[],
+            stats={
+                'total_oz_skus_processed': 0,
+                'oz_skus_with_barcodes': 0,
+                'unique_wb_skus_found': 0,
+                'total_barcode_matches': 0,
+                'processing_time_seconds': 0.0
+            }
+        ) 

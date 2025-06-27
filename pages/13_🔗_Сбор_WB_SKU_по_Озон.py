@@ -148,7 +148,7 @@ with col2:
     st.markdown("""
     **Актуальные штрихкоды:**
     - **WB**: последний в списке через `;`
-    - **OZ**: последний в алфавитном порядке
+    - **OZ**: последний по порядку добавления в базу
     
     **Результат:**
     - Уникальные wb_sku
@@ -299,7 +299,7 @@ if 'collection_result' in st.session_state:
             {'Метрика': 'Уникальных WB SKU найдено', 'Значение': result.stats['unique_wb_skus_found']},
             {'Метрика': 'Дубликатов связей', 'Значение': len(result.duplicate_mappings)},
             {'Метрика': 'Всего совпадений штрихкодов', 'Значение': result.stats['total_barcode_matches']},
-            {'Метрика': 'Время обработки (сек)', 'Значение': f"{result.stats['processing_time_seconds']:.3f}"},
+            {'Метрика': 'Время обработки (сек)', 'Значение': round(result.stats['processing_time_seconds'], 3)},
         ])
         
         st.dataframe(stats_df, use_container_width=True)
