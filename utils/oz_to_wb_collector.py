@@ -48,15 +48,23 @@ class OzToWbCollector:
     не совпадают, но один товар представлен в обеих системах.
     """
     
-    def __init__(self, connection: duckdb.DuckDBPyConnection):
+    def __init__(self, connection: duckdb.DuckDBPyConnection, progress_callback=None):
         """
         Инициализация коллектора.
         
         Args:
             connection: Активное соединение с базой данных DuckDB
+            progress_callback: Функция для обновления прогресса (опционально)
         """
         self.connection = connection
         self.linker = CrossMarketplaceLinker(connection)
+        self.progress_callback = progress_callback
+    
+    def _update_progress(self, current: int, total: int, message: str = ""):
+        """Обновляет прогресс если задан callback"""
+        if self.progress_callback:
+            progress = current / total if total > 0 else 0
+            self.progress_callback(progress, f"{message} ({current}/{total})")
         
     def get_oz_actual_barcodes(self, oz_skus: List[str]) -> pd.DataFrame:
         """
@@ -180,9 +188,16 @@ class OzToWbCollector:
             WbSkuCollectionResult: Результат сбора с данными и статистикой
         """
         start_time = time.time()
+        debug_info = {}
         
-        # Получаем актуальные штрихкоды для OZ товаров
+        # Этап 1: Получение актуальных штрихкодов для OZ товаров
+        step1_start = time.time()
+        self._update_progress(1, 8, f"Получение актуальных штрихкодов для {len(oz_skus)} OZ товаров")
         oz_actual_barcodes = self.get_oz_actual_barcodes(oz_skus)
+        step1_time = time.time() - step1_start
+        debug_info['step1_time'] = step1_time
+        debug_info['oz_skus_input'] = len(oz_skus)
+        debug_info['oz_skus_with_barcodes'] = len(oz_actual_barcodes)
         
         if oz_actual_barcodes.empty:
             return WbSkuCollectionResult(
@@ -198,35 +213,88 @@ class OzToWbCollector:
                 }
             )
         
-        # ИСПРАВЛЕНИЕ: Ищем wb_sku, где актуальные штрихкоды OZ встречаются среди ЛЮБЫХ штрихкодов WB
-        # Не только актуальных штрихкодов WB
+        # ОПТИМИЗИРОВАННЫЙ АЛГОРИТМ: Заменяем медленные LIKE операции на быстрый JOIN
+        # 1. Разделяем все WB штрихкоды на отдельные записи
+        # 2. Делаем JOIN с OZ штрихкодами
         barcode_matching_query = """
         WITH oz_barcodes_list AS (
             SELECT DISTINCT actual_barcode
             FROM UNNEST(?) AS t(actual_barcode)
             WHERE actual_barcode IS NOT NULL AND TRIM(actual_barcode) != ''
+        ),
+        wb_barcodes_split AS (
+            SELECT 
+                wb_sku,
+                TRIM(barcode) as individual_barcode
+            FROM wb_products wb,
+            UNNEST(string_split(wb.wb_barcodes, ';')) AS t(barcode)
+            WHERE wb.wb_barcodes IS NOT NULL 
+              AND TRIM(wb.wb_barcodes) != ''
+              AND TRIM(barcode) != ''
         )
         SELECT DISTINCT 
-            wb.wb_sku,
+            wbs.wb_sku,
             ozb.actual_barcode as matching_barcode
-        FROM wb_products wb
-        CROSS JOIN oz_barcodes_list ozb
-        WHERE wb.wb_barcodes IS NOT NULL 
-          AND TRIM(wb.wb_barcodes) != ''
-          AND wb.wb_barcodes LIKE '%' || ozb.actual_barcode || '%'
+        FROM wb_barcodes_split wbs
+        INNER JOIN oz_barcodes_list ozb 
+            ON wbs.individual_barcode = ozb.actual_barcode
         """
         
-        # Подготавливаем список уникальных штрихкодов
+        # Этап 2: Подготовка поиска совпадений
+        step2_start = time.time()
+        self._update_progress(2, 8, "Подготовка списка уникальных штрихкодов")
         unique_barcodes = oz_actual_barcodes['actual_barcode'].unique().tolist()
+        step2_time = time.time() - step2_start
+        debug_info['step2_time'] = step2_time
+        debug_info['unique_barcodes_count'] = len(unique_barcodes)
         
-        # Выполняем поиск совпадений
+        # Этап 3: Получение информации о базе WB
+        step3_start = time.time()
+        self._update_progress(3, 8, "Подсчет записей в базе WB")
+        wb_count_query = "SELECT COUNT(*) as wb_count FROM wb_products WHERE wb_barcodes IS NOT NULL AND TRIM(wb_barcodes) != ''"
+        wb_count = self.connection.execute(wb_count_query).fetchone()[0]
+        step3_time = time.time() - step3_start
+        debug_info['step3_time'] = step3_time
+        debug_info['wb_products_count'] = wb_count
+        
+        # Этап 4: Поиск совпадений штрихкодов в WB (оптимизированный алгоритм)
+        step4_start = time.time()
+        self._update_progress(4, 8, f"Оптимизированный поиск: разделение {wb_count:,} WB товаров на штрихкоды")
+        
+        # Сначала получаем количество индивидуальных WB штрихкодов для лучшего понимания сложности
+        wb_individual_count_query = """
+        SELECT COUNT(*) as individual_count
+        FROM wb_products wb,
+        UNNEST(string_split(wb.wb_barcodes, ';')) AS t(barcode)
+        WHERE wb.wb_barcodes IS NOT NULL 
+          AND TRIM(wb.wb_barcodes) != ''
+          AND TRIM(barcode) != ''
+        """
+        wb_individual_count = self.connection.execute(wb_individual_count_query).fetchone()[0]
+        debug_info['wb_individual_barcodes_count'] = wb_individual_count
+        
+        step4_split_time = time.time() - step4_start
+        self._update_progress(4, 8, f"JOIN {len(unique_barcodes):,} OZ штрихкодов с {wb_individual_count:,} WB штрихкодами")
+        
         matches_result = self.connection.execute(barcode_matching_query, [unique_barcodes]).fetchdf()
+        step4_time = time.time() - step4_start
+        debug_info['step4_time'] = step4_time
+        debug_info['sql_execution_time'] = step4_time
+        debug_info['wb_split_time'] = step4_split_time
         
-        # Группируем результаты
+        # Этап 5: Обработка результатов поиска
+        step5_start = time.time()
+        self._update_progress(5, 8, f"Обработка {len(matches_result)} найденных совпадений")
         wb_skus = matches_result['wb_sku'].unique().tolist() if not matches_result.empty else []
         total_matches = len(matches_result) if not matches_result.empty else 0
+        step5_time = time.time() - step5_start
+        debug_info['step5_time'] = step5_time
+        debug_info['raw_matches_found'] = total_matches
+        debug_info['unique_wb_skus_found'] = len(wb_skus)
         
-        # Создаем mapping oz_sku -> wb_sku для анализа дублей
+        # Этап 6: Создание маппинга oz_sku -> wb_sku
+        step6_start = time.time()
+        self._update_progress(6, 8, "Создание маппинга oz_sku -> wb_sku")
         oz_to_wb_mapping = {}
         duplicate_mappings = []
         
@@ -251,10 +319,26 @@ class OzToWbCollector:
                         'wb_skus': wb_skus_for_oz,
                         'matching_barcode': group['matching_barcode'].iloc[0]
                     })
+        step6_time = time.time() - step6_start
+        debug_info['step6_time'] = step6_time
+        debug_info['duplicate_mappings_count'] = len(duplicate_mappings)
         
-        # Определяем oz_sku без связей
-        oz_skus_with_matches = set(oz_to_wb_mapping.keys())
-        no_links_oz_skus = [sku for sku in oz_skus if sku not in oz_skus_with_matches]
+        # Этап 7: Определение oz_sku без связей
+        step7_start = time.time()
+        self._update_progress(7, 8, "Определение oz_sku без связей с WB")
+        # ИСПРАВЛЕНИЕ: Приводим типы данных к строкам для корректного сравнения
+        oz_skus_with_matches = set(str(sku) for sku in oz_to_wb_mapping.keys())
+        no_links_oz_skus = [sku for sku in oz_skus if str(sku) not in oz_skus_with_matches]
+        step7_time = time.time() - step7_start
+        debug_info['step7_time'] = step7_time
+        debug_info['oz_skus_without_links'] = len(no_links_oz_skus)
+        
+        # Этап 8: Финализация результатов
+        step8_start = time.time()
+        self._update_progress(8, 8, "Финализация и подготовка отчета")
+        total_time = time.time() - start_time
+        debug_info['step8_time'] = time.time() - step8_start
+        debug_info['total_processing_time'] = total_time
         
         return WbSkuCollectionResult(
             wb_skus=wb_skus,
@@ -265,7 +349,80 @@ class OzToWbCollector:
                 'oz_skus_with_barcodes': len(oz_actual_barcodes),
                 'unique_wb_skus_found': len(wb_skus),
                 'total_barcode_matches': total_matches,
-                'processing_time_seconds': time.time() - start_time
+                'processing_time_seconds': total_time,
+                # Отладочная информация
+                'debug_info': debug_info
+            }
+        )
+    
+    def collect_wb_skus_for_oz_assortment_batched(self, oz_skus: List[str], batch_size: int = 1000) -> WbSkuCollectionResult:
+        """
+        Батчевая версия сбора wb_sku для очень больших объемов данных.
+        Обрабатывает OZ SKU порциями для снижения нагрузки на базу данных.
+        
+        Args:
+            oz_skus: Список OZ SKU для поиска
+            batch_size: Размер батча для обработки
+            
+        Returns:
+            WbSkuCollectionResult: Результат сбора с данными и статистикой
+        """
+        start_time = time.time()
+        debug_info = {'batched_processing': True, 'batch_size': batch_size}
+        
+        # Разбиваем на батчи
+        oz_skus_batches = [oz_skus[i:i + batch_size] for i in range(0, len(oz_skus), batch_size)]
+        total_batches = len(oz_skus_batches)
+        debug_info['total_batches'] = total_batches
+        
+        # Аккумуляторы результатов
+        all_wb_skus = set()
+        all_no_links = []
+        all_duplicates = []
+        total_matches = 0
+        total_oz_with_barcodes = 0
+        
+        self._update_progress(0, total_batches, f"Начинаем батчевую обработку: {total_batches} батчей по {batch_size}")
+        
+        for batch_idx, batch_oz_skus in enumerate(oz_skus_batches):
+            batch_start = time.time()
+            self._update_progress(
+                batch_idx, 
+                total_batches, 
+                f"Обработка батча {batch_idx + 1}/{total_batches} ({len(batch_oz_skus)} oz_sku)"
+            )
+            
+            # Обрабатываем батч без прогресса (чтобы не конфликтовать)
+            batch_collector = OzToWbCollector(self.connection, progress_callback=None)
+            batch_result = batch_collector.collect_wb_skus_for_oz_assortment(batch_oz_skus)
+            
+            # Аккумулируем результаты
+            all_wb_skus.update(batch_result.wb_skus)
+            all_no_links.extend(batch_result.no_links_oz_skus)
+            all_duplicates.extend(batch_result.duplicate_mappings)
+            total_matches += batch_result.stats['total_barcode_matches']
+            total_oz_with_barcodes += batch_result.stats['oz_skus_with_barcodes']
+            
+            batch_time = time.time() - batch_start
+            debug_info[f'batch_{batch_idx}_time'] = batch_time
+        
+        self._update_progress(total_batches, total_batches, "Батчевая обработка завершена")
+        
+        total_time = time.time() - start_time
+        debug_info['total_processing_time'] = total_time
+        
+        return WbSkuCollectionResult(
+            wb_skus=list(all_wb_skus),
+            no_links_oz_skus=all_no_links,
+            duplicate_mappings=all_duplicates,
+            stats={
+                'total_oz_skus_processed': len(oz_skus),
+                'oz_skus_with_barcodes': total_oz_with_barcodes,
+                'unique_wb_skus_found': len(all_wb_skus),
+                'total_barcode_matches': total_matches,
+                'processing_time_seconds': total_time,
+                # Отладочная информация
+                'debug_info': debug_info
             }
         )
     
@@ -369,19 +526,48 @@ class OzToWbCollector:
 
 
 # Удобные функции для быстрого использования
-def collect_wb_skus_for_all_oz_products(connection: duckdb.DuckDBPyConnection) -> WbSkuCollectionResult:
+def collect_wb_skus_for_all_oz_products(connection: duckdb.DuckDBPyConnection, progress_callback=None) -> WbSkuCollectionResult:
     """
     Быстрая функция для сбора wb_sku для всего ассортимента Озон.
+    Применяет фильтр по брендам из настроек проекта.
     
     Args:
         connection: Соединение с базой данных
+        progress_callback: Функция для отображения прогресса
         
     Returns:
         WbSkuCollectionResult с результатами сбора
     """
     try:
-        # Получаем весь ассортимент из oz_products
-        all_oz_query = "SELECT DISTINCT CAST(oz_sku AS VARCHAR) as oz_sku FROM oz_products WHERE oz_sku IS NOT NULL"
+        # Импорт утилит конфигурации
+        from . import config_utils
+        
+        # Получаем фильтр брендов из настроек
+        brands_filter = config_utils.get_data_filter("oz_category_products_brands")
+        
+        if brands_filter and brands_filter.strip():
+            # Разбираем список брендов
+            allowed_brands = [brand.strip() for brand in brands_filter.split(";") if brand.strip()]
+            
+            if allowed_brands:
+                # Создаем условие для фильтрации по брендам
+                brands_condition = ", ".join([f"'{brand}'" for brand in allowed_brands])
+                all_oz_query = f"""
+                SELECT DISTINCT CAST(oz_sku AS VARCHAR) as oz_sku 
+                FROM oz_products 
+                WHERE oz_sku IS NOT NULL 
+                AND oz_brand IN ({brands_condition})
+                """
+                
+                if progress_callback:
+                    progress_callback(0.0, f"Фильтрация по брендам: {', '.join(allowed_brands[:3])}{'...' if len(allowed_brands) > 3 else ''}")
+            else:
+                # Если фильтр пустой - берем все
+                all_oz_query = "SELECT DISTINCT CAST(oz_sku AS VARCHAR) as oz_sku FROM oz_products WHERE oz_sku IS NOT NULL"
+        else:
+            # Если фильтр не настроен - берем все
+            all_oz_query = "SELECT DISTINCT CAST(oz_sku AS VARCHAR) as oz_sku FROM oz_products WHERE oz_sku IS NOT NULL"
+        
         all_oz_result = connection.execute(all_oz_query).fetchdf()
         
         if all_oz_result.empty:
@@ -399,8 +585,13 @@ def collect_wb_skus_for_all_oz_products(connection: duckdb.DuckDBPyConnection) -
             )
         
         oz_skus = all_oz_result['oz_sku'].tolist()
-        collector = OzToWbCollector(connection)
-        return collector.collect_wb_skus_for_oz_assortment(oz_skus)
+        collector = OzToWbCollector(connection, progress_callback)
+        
+        # Автоматически используем батчинг для больших объемов (>50,000 SKU)
+        if len(oz_skus) > 50000:
+            return collector.collect_wb_skus_for_oz_assortment_batched(oz_skus, batch_size=1000)
+        else:
+            return collector.collect_wb_skus_for_oz_assortment(oz_skus)
         
     except Exception as e:
         st.error(f"Ошибка при сборе wb_sku для всего ассортимента: {e}")
@@ -420,7 +611,8 @@ def collect_wb_skus_for_all_oz_products(connection: duckdb.DuckDBPyConnection) -
 
 def collect_wb_skus_for_oz_list(
     connection: duckdb.DuckDBPyConnection, 
-    oz_skus: List[str]
+    oz_skus: List[str],
+    progress_callback=None
 ) -> WbSkuCollectionResult:
     """
     Быстрая функция для сбора wb_sku для указанного списка oz_sku.
@@ -447,8 +639,13 @@ def collect_wb_skus_for_oz_list(
                 }
             )
         
-        collector = OzToWbCollector(connection)
-        return collector.collect_wb_skus_for_oz_assortment(oz_skus)
+        collector = OzToWbCollector(connection, progress_callback)
+        
+        # Автоматически используем батчинг для больших объемов (>10,000 SKU)
+        if len(oz_skus) > 10000:
+            return collector.collect_wb_skus_for_oz_assortment_batched(oz_skus, batch_size=1000)
+        else:
+            return collector.collect_wb_skus_for_oz_assortment(oz_skus)
         
     except Exception as e:
         st.error(f"Ошибка при сборе wb_sku для списка oz_sku: {e}")
