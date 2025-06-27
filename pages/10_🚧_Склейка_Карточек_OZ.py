@@ -26,6 +26,10 @@ from utils.cards_matcher_ui_components import (
     render_error_message,
     render_success_message
 )
+import io
+from datetime import datetime
+import time
+import threading
 
 st.set_page_config(page_title="Cards Matcher - Marketplace Analyzer", layout="wide")
 st.title("🃏 Cards Matcher - Управление товарными карточками")
@@ -52,7 +56,7 @@ Cards Matcher помогает оптимизировать товарные к�
 """)
 
 # --- Tabs ---
-tab1, tab2, tab3 = st.tabs(["📊 Загрузка рейтингов Ozon", "🔗 Группировка товаров (в разработке)", "✏️ Редактирование существующих групп"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Загрузка рейтингов Ozon", "🔗 Группировка товаров (в разработке)", "🆕 Расширенная группировка", "✏️ Редактирование существующих групп"])
 
 with tab1:
     st.header("📊 Загрузка рейтингов товаров Ozon")
@@ -581,6 +585,610 @@ with tab2:
             st.info("👆 **Введите wb_sku выше для начала работы с группировкой товаров**")
 
 with tab3:
+    st.header("🆕 Расширенная группировка товаров")
+    
+    st.markdown("""
+    ### 🚀 Новый алгоритм группировки с расширенными возможностями
+    
+    **Ключевые особенности:**
+    - 🏆 **Умная приоритизация**: Товары с максимальным `sort`, затем с остатками
+    - ⭐ **Высокий рейтинг = отдельная карточка**: Товары с рейтингом выше минимального порога остаются в отдельных группах
+    - 📊 **Компенсация рейтинга**: Автоматический поиск товаров для повышения группового рейтинга (только для товаров с низким рейтингом)
+    - 👥 **Обязательная группировка по полу**: Мальчики и девочки всегда в разных группах
+    - 🚫 **Обработка брака**: Товары с "БракSH" получают уникальные коды
+    - 📋 **Детальная отчетность**: Разделение на успешные группы, товары без связей и с низким рейтингом
+    
+    **Алгоритм работы:**
+    1. Анализ входного списка wb_sku по категориям
+    2. Поиск связанных товаров Ozon и их рейтингов
+    3. Суммирование остатков по wb_sku
+    4. Приоритизация: максимальный sort → товары с остатками → остальные
+    5. **ВАЖНО**: Товары с рейтингом ≥ минимального порога → отдельные группы
+    6. Группировка товаров с низким рейтингом по выбранным критериям
+    7. Компенсация низкого рейтинга аналогичными товарами
+    8. Создание финальных групп с уникальными merge_on_card
+    
+    **💡 Принцип "Высокий рейтинг = отдельная карточка":**
+    - Если товар уже имеет рейтинг выше указанного минимума, он остается в отдельной группе
+    - Такие товары получают собственный wb_sku как код объединения (merge_on_card)
+    - Это гарантирует, что качественные товары не "разбавляются" менее качественными
+    """)
+    
+    # Check if rating data is available
+    try:
+        rating_check = conn.execute("SELECT COUNT(*) FROM oz_card_rating").fetchone()
+        has_rating_data = rating_check and rating_check[0] > 0
+    except:
+        has_rating_data = False
+    
+    if not has_rating_data:
+        st.warning("📭 **Для работы расширенной группировки необходимо сначала загрузить данные рейтингов.** Используйте первую вкладку для импорта рейтингов Ozon.")
+    else:
+        # Import the new advanced helper function
+        from utils.cards_matcher_helpers import (
+            create_advanced_product_groups,
+            get_available_grouping_columns
+        )
+        
+        st.markdown("---")
+        st.markdown("### 📝 Настройки расширенной группировки")
+        
+        # Input section for WB SKUs
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            wb_skus_input_advanced = st.text_area(
+                "**Введите артикулы WB (wb_sku):**",
+                height=120,
+                help="Введите wb_sku через пробел, запятую или каждый на новой строке",
+                placeholder="123456 789012\n345678\n901234",
+                key="advanced_wb_skus"
+            )
+            
+        with col2:
+            st.info("""
+            **🎯 Новый алгоритм:**
+            
+            1. Анализ приоритетов
+            2. Группировка по gender+
+            3. Компенсация рейтинга
+            4. Обработка брака
+            5. Детальные отчеты
+            """)
+        
+        # Parse WB SKUs from input
+        wb_skus_advanced = []
+        if wb_skus_input_advanced.strip():
+            import re
+            wb_skus_raw = re.split(r'[,\s\n]+', wb_skus_input_advanced.strip())
+            wb_skus_advanced = [sku.strip() for sku in wb_skus_raw if sku.strip().isdigit()]
+        
+        if wb_skus_advanced:
+            st.success(f"✅ Распознано {len(wb_skus_advanced)} валидных wb_sku")
+            
+            # Show preview of parsed SKUs
+            with st.expander("📋 Просмотр распознанных wb_sku"):
+                st.write(", ".join(wb_skus_advanced[:20]) + ("..." if len(wb_skus_advanced) > 20 else ""))
+        
+        # Advanced configuration
+        st.markdown("---")
+        st.markdown("### ⚙️ Расширенные настройки")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            min_group_rating_advanced = st.slider(
+                "Минимальный рейтинг группы", 
+                0.0, 5.0, 4.0, 0.1,
+                help="Группы с рейтингом ниже этого значения будут дополнены компенсирующими товарами",
+                key="advanced_min_rating"
+            )
+        
+        with col2:
+            max_wb_sku_per_group_advanced = st.number_input(
+                "Максимум wb_sku в группе",
+                min_value=1,
+                max_value=50,
+                value=15,
+                step=1,
+                help="Ограничение размера группы для удобства управления",
+                key="advanced_max_group"
+            )
+        
+        with col3:
+            enable_sort_priority_advanced = st.checkbox(
+                "🎯 Приоритизация по sort",
+                value=True,
+                help="Товары с максимальным значением sort получают приоритет",
+                key="advanced_sort_priority"
+            )
+        
+        with col4:
+            # Category filter
+            wb_category_filter = st.text_input(
+                "Фильтр по категории WB",
+                placeholder="Например: Обувь",
+                help="Оставьте пустым для обработки всех категорий",
+                key="advanced_category_filter"
+            )
+        
+        # Important notice about high rating logic
+        st.info(f"""
+        **🎯 Важно понимать:** Товары с рейтингом **≥ {min_group_rating_advanced}** будут помещены в **отдельные группы**.
+        
+        - Такие товары получат собственный wb_sku как код объединения (merge_on_card)
+        - Они НЕ будут объединяться с другими товарами
+        - Только товары с рейтингом **< {min_group_rating_advanced}** будут группироваться и получать компенсацию
+        """)
+        
+        # Grouping columns selection
+        st.markdown("#### 🔗 Поля для группировки")
+        
+        if wb_skus_advanced:
+            available_columns = get_available_grouping_columns(conn)
+            
+            if available_columns:
+                # Remove gender from options since it's mandatory
+                grouping_options = [col for col in available_columns if col != 'gender']
+                
+                st.info("🔒 **Поле 'gender' включено автоматически** (обязательное для разделения мальчики/девочки)")
+                
+                grouping_columns_advanced = st.multiselect(
+                    "Дополнительные поля для группировки:",
+                    options=grouping_options,
+                    default=['season', 'material'] if all(col in grouping_options for col in ['season', 'material']) else grouping_options[:2],
+                    help="Товары будут группироваться по gender + выбранным полям",
+                    key="advanced_grouping_cols"
+                )
+            else:
+                grouping_columns_advanced = []
+                st.warning("⚠️ Таблица punta_table не найдена или пуста")
+        else:
+            grouping_columns_advanced = []
+        
+        # Advanced grouping execution
+        if wb_skus_advanced:
+            st.markdown("---")
+            
+            # Run advanced grouping button
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                run_grouping = st.button("🚀 Запустить расширенную группировку", type="primary", key="run_advanced_grouping")
+            
+            with col2:
+                if wb_skus_advanced and len(wb_skus_advanced) > 100:
+                    st.info("⏳ **Большой объем данных**\n\nДля обработки >100 товаров будет показан детальный прогресс-бар с пошаговым статусом операций.")
+            
+            if run_grouping:
+                if not wb_skus_advanced:
+                    st.error("⚠️ Введите список wb_sku для группировки")
+                else:
+                    # Показываем оценку времени выполнения
+                    wb_count = len(wb_skus_advanced)
+                    estimated_time = wb_count * 0.5  # Примерно 0.5 сек на товар
+                    
+                    if wb_count > 50:
+                        st.info(f"📊 Будет обработано {wb_count} товаров. Ориентировочное время: {estimated_time:.0f}-{estimated_time*2:.0f} секунд")
+                    
+                    with st.spinner("Подготовка к группировке..."):
+                        time.sleep(0.5)  # Небольшая задержка для показа спиннера
+                    
+                    try:
+                        # Выполняем расширенную группировку с прогресс-баром
+                        start_time = time.time()
+                        progress_bar = st.progress(0)
+                        status_placeholder = st.empty()
+                        
+                        def update_progress(progress: float, status: str):
+                            """Callback функция для обновления прогресса"""
+                            elapsed = time.time() - start_time
+                            progress_bar.progress(progress)
+                            status_placeholder.info(f"⏳ {status} (⏱️ {elapsed:.1f}с)")
+                        
+                        # Запускаем группировку с колбэком прогресса
+                        groups_df, no_links_df, low_rating_df = create_advanced_product_groups(
+                            conn,
+                            wb_skus_advanced,
+                            grouping_columns_advanced,
+                            min_group_rating_advanced,
+                            max_wb_sku_per_group_advanced,
+                            enable_sort_priority_advanced,
+                            wb_category_filter.strip() if wb_category_filter else None,
+                            progress_callback=update_progress
+                        )
+                        
+                        # Показываем общее время выполнения
+                        total_time = time.time() - start_time
+                        
+                        # Очищаем прогресс-бар после завершения
+                        progress_bar.empty()
+                        status_placeholder.success(f"✅ Группировка завершена за {total_time:.1f} секунд")
+                        
+                        # Автоматически скрываем статус через 3 секунды
+                        def clear_status():
+                            """Очищает статус через 3 секунды"""
+                            import time
+                            import streamlit as st
+                            time.sleep(3)
+                            try:
+                                # Проверяем, что контекст Streamlit еще активен
+                                if hasattr(st, '_get_session_state') and st.session_state:
+                                    status_placeholder.empty()
+                                    progress_placeholder.empty()
+                            except Exception as e:
+                                # Игнорируем ошибки при очистке UI
+                                pass
+                        
+                        threading.Thread(target=clear_status, daemon=True).start()
+                        
+                        # Сохраняем результаты в session_state для экспорта
+                        st.session_state['advanced_groups_df'] = groups_df
+                        st.session_state['advanced_no_links_df'] = no_links_df
+                        st.session_state['advanced_low_rating_df'] = low_rating_df
+                        st.session_state['advanced_results_timestamp'] = datetime.now().strftime('%Y%m%d_%H%M')
+                        st.session_state['advanced_results_ready'] = True
+                        st.session_state['advanced_wb_skus_count'] = len(wb_skus_advanced)
+                        st.session_state['advanced_min_group_rating'] = min_group_rating_advanced
+                        # ВАЖНО: Сохраняем входные wb_sku для правильного подсчета статистики
+                        st.session_state['advanced_input_wb_skus'] = wb_skus_advanced.copy()
+                    
+                    except Exception as e:
+                        render_error_message(e, "расширенной группировки")
+                        st.info("Проверьте правильность входных данных и настроек")
+        
+        # Отображение результатов из session_state (независимо от обработки)
+        if st.session_state.get('advanced_results_ready', False):
+            # Получаем сохраненные результаты
+            saved_groups_df = st.session_state.get('advanced_groups_df', pd.DataFrame())
+            saved_no_links_df = st.session_state.get('advanced_no_links_df', pd.DataFrame())
+            saved_low_rating_df = st.session_state.get('advanced_low_rating_df', pd.DataFrame())
+            saved_wb_skus_count = st.session_state.get('advanced_wb_skus_count', 0)
+            saved_min_group_rating = st.session_state.get('advanced_min_group_rating', 0.0)
+            timestamp = st.session_state.get('advanced_results_timestamp', datetime.now().strftime('%Y%m%d_%H%M'))
+            
+            # Показываем результаты
+            st.markdown("### 📊 Результаты расширенной группировки")
+            
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📦 Всего обработано", saved_wb_skus_count)
+            
+            with col2:
+                successful_groups = len(saved_groups_df['group_id'].unique()) if not saved_groups_df.empty else 0
+                st.metric("✅ Успешных групп", successful_groups)
+            
+            with col3:
+                no_links_count = len(saved_no_links_df) if not saved_no_links_df.empty else 0
+                st.metric("❌ Без связей", no_links_count)
+            
+            with col4:
+                low_rating_count = len(saved_low_rating_df) if not saved_low_rating_df.empty else 0
+                st.metric("⭐ Низкий рейтинг", low_rating_count)
+            
+            # Show successful groups
+            if not saved_groups_df.empty:
+                st.success(f"✅ Создано {len(saved_groups_df)} групп из {saved_groups_df['group_id'].nunique()} уникальных групп")
+                
+                # Calculate statistics
+                total_wb_count = saved_groups_df['wb_count'].sum()
+                high_rating_groups = saved_groups_df[saved_groups_df['group_recommendation'] == 'Высокий рейтинг - отдельная карточка']['group_id'].nunique()
+                compensated_groups = saved_groups_df[saved_groups_df['group_recommendation'] != 'Высокий рейтинг - отдельная карточка']['group_id'].nunique()
+                defective_groups = saved_groups_df[saved_groups_df['is_defective'] == True]['group_id'].nunique()
+                
+                # Enhanced metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Общий охват", f"{total_wb_count} wb_sku")
+                with col2:
+                    st.metric("🌟 Высокий рейтинг", f"{high_rating_groups} групп", 
+                            help="Отдельные группы для товаров с высоким рейтингом")
+                with col3:
+                    st.metric("🔧 Компенсированные", f"{compensated_groups} групп",
+                            help="Группы с компенсацией низкого рейтинга")
+                with col4:
+                    if defective_groups > 0:
+                        st.metric("🚫 Брак", f"{defective_groups} групп")
+                    else:
+                        st.metric("Средний рейтинг", f"{saved_groups_df['group_avg_rating'].mean():.2f}")
+                
+                # Separate high rating and compensated groups for clearer display
+                high_rating_df = saved_groups_df[saved_groups_df['group_recommendation'] == 'Высокий рейтинг - отдельная карточка']
+                other_groups_df = saved_groups_df[saved_groups_df['group_recommendation'] != 'Высокий рейтинг - отдельная карточка']
+                
+                # Display high rating groups separately
+                if not high_rating_df.empty:
+                    st.markdown("#### 🌟 Товары с высоким рейтингом (отдельные группы)")
+                    st.info(f"Эти {len(high_rating_df)} товаров остались в отдельных группах так как их рейтинг ≥ {saved_min_group_rating}")
+                    
+                    # Show as separate groups
+                    display_columns = ['wb_sku']
+                    if 'oz_vendor_code' in high_rating_df.columns:
+                        display_columns.append('oz_vendor_code')
+                    display_columns.extend(['merge_on_card', 'avg_rating', 'gender'])
+                    
+                    high_rating_display = high_rating_df[display_columns].copy()
+                    column_names = ['WB SKU']
+                    if 'oz_vendor_code' in high_rating_df.columns:
+                        column_names.append('Артикул Ozon')
+                    column_names.extend(['Код объединения', 'Рейтинг', 'Пол'])
+                    
+                    high_rating_display.columns = column_names
+                    
+                    st.dataframe(
+                        high_rating_display,
+                        use_container_width=True,
+                        height=min(200, len(high_rating_display) * 35 + 50)
+                    )
+                
+                # Display compensated/other groups
+                if not other_groups_df.empty:
+                    st.markdown("#### 🔧 Компенсированные и специальные группы")
+                    
+                    # Group by merge_on_card and show group statistics
+                    group_stats = []
+                    for merge_code, group_data in other_groups_df.groupby('merge_on_card'):
+                        group_stats.append({
+                            'Код объединения': merge_code,
+                            'Количество товаров': len(group_data),
+                            'Рейтинг группы': group_data['group_avg_rating'].iloc[0],
+                            'Тип': group_data['group_recommendation'].iloc[0],
+                            'Пол': group_data['gender'].iloc[0] if 'gender' in group_data.columns else 'Не указан'
+                        })
+                    
+                    group_stats_df = pd.DataFrame(group_stats)
+                    st.dataframe(
+                        group_stats_df,
+                        use_container_width=True,
+                        height=min(300, len(group_stats_df) * 35 + 50)
+                    )
+                    
+                    # Detailed view option
+                    if st.checkbox("📋 Показать детальный состав групп", key="show_detailed_advanced"):
+                        for merge_code, group_data in other_groups_df.groupby('merge_on_card'):
+                            with st.expander(f"Группа {merge_code} ({len(group_data)} товаров, рейтинг: {group_data['group_avg_rating'].iloc[0]:.2f})"):
+                                # Включаем oz_vendor_code если доступно (на второй позиции)
+                                detail_columns = ['wb_sku']
+                                if 'oz_vendor_code' in group_data.columns:
+                                    detail_columns.append('oz_vendor_code')
+                                detail_columns.extend(['avg_rating', 'gender'])
+                                
+                                detailed_data = group_data[detail_columns].copy()
+                                column_names = ['WB SKU']
+                                if 'oz_vendor_code' in group_data.columns:
+                                    column_names.append('Артикул Ozon')
+                                column_names.extend(['Индивидуальный рейтинг', 'Пол'])
+                                
+                                detailed_data.columns = column_names
+                                st.dataframe(detailed_data, use_container_width=True)
+                
+                # Export functionality with clear separation
+                st.markdown("#### 📁 Экспорт результатов")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("📊 Экспорт всех групп (Excel)", key="export_all_excel_advanced"):
+                        try:
+                            excel_buffer = io.BytesIO()
+                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                if not saved_groups_df.empty:
+                                    high_rating_df_export = saved_groups_df[saved_groups_df['group_recommendation'] == 'Высокий рейтинг - отдельная карточка']
+                                    other_groups_df_export = saved_groups_df[saved_groups_df['group_recommendation'] != 'Высокий рейтинг - отдельная карточка']
+                                    
+                                    if not high_rating_df_export.empty:
+                                        high_rating_df_export.to_excel(writer, sheet_name='Высокий рейтинг', index=False)
+                                    if not other_groups_df_export.empty:
+                                        other_groups_df_export.to_excel(writer, sheet_name='Компенсированные', index=False)
+                                if not saved_no_links_df.empty:
+                                    saved_no_links_df.to_excel(writer, sheet_name='Без связей', index=False)
+                                if not saved_low_rating_df.empty:
+                                    saved_low_rating_df.to_excel(writer, sheet_name='Низкий рейтинг', index=False)
+                            
+                            st.download_button(
+                                label="⬇️ Скачать Excel",
+                                data=excel_buffer.getvalue(),
+                                file_name=f"расширенная_группировка_{timestamp}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="download_excel_advanced"
+                            )
+                        except Exception as e:
+                            st.error(f"Ошибка создания Excel: {e}")
+                
+                with col2:
+                    if st.button("📝 Экспорт всех групп (CSV)", key="export_all_csv_advanced"):
+                        try:
+                            if not saved_groups_df.empty:
+                                csv_data = saved_groups_df.to_csv(index=False).encode('utf-8')
+                                st.download_button(
+                                    label="⬇️ Скачать CSV",
+                                    data=csv_data,
+                                    file_name=f"расширенная_группировка_{timestamp}.csv",
+                                    mime="text/csv",
+                                    key="download_csv_advanced"
+                                )
+                            else:
+                                st.warning("Нет данных для экспорта")
+                        except Exception as e:
+                            st.error(f"Ошибка создания CSV: {e}")
+                
+                with col3:
+                    # Summary export option
+                    if st.button("📊 Экспорт сводки", key="export_summary_advanced"):
+                        try:
+                            summary_data = []
+                            
+                            if not saved_groups_df.empty:
+                                high_rating_df_summary = saved_groups_df[saved_groups_df['group_recommendation'] == 'Высокий рейтинг - отдельная карточка']
+                                other_groups_df_summary = saved_groups_df[saved_groups_df['group_recommendation'] != 'Высокий рейтинг - отдельная карточка']
+                                
+                                # Add high rating groups summary
+                                for _, row in high_rating_df_summary.iterrows():
+                                    summary_data.append({
+                                        'wb_sku': row['wb_sku'],
+                                        'merge_on_card': row['merge_on_card'],
+                                        'type': 'Высокий рейтинг',
+                                        'group_size': 1,
+                                        'group_rating': row['avg_rating']
+                                    })
+                                
+                                # Add other groups summary
+                                for merge_code, group_data in other_groups_df_summary.groupby('merge_on_card'):
+                                    summary_data.append({
+                                        'wb_sku': ', '.join(group_data['wb_sku'].astype(str)),
+                                        'merge_on_card': merge_code,
+                                        'type': group_data['group_recommendation'].iloc[0],
+                                        'group_size': len(group_data),
+                                        'group_rating': group_data['group_avg_rating'].iloc[0]
+                                    })
+                            
+                            if summary_data:
+                                summary_df = pd.DataFrame(summary_data)
+                                csv_data = summary_df.to_csv(index=False).encode('utf-8')
+                                
+                                st.download_button(
+                                    label="⬇️ Скачать сводку",
+                                    data=csv_data,
+                                    file_name=f"сводка_группировки_{timestamp}.csv",
+                                    mime="text/csv",
+                                    key="download_summary_advanced"
+                                )
+                            else:
+                                st.warning("Нет данных для создания сводки")
+                        except Exception as e:
+                            st.error(f"Ошибка создания сводки: {e}")
+            
+            else:
+                st.warning("⚠️ Не удалось создать ни одной группы")
+            
+            # Show items without links
+            if not saved_no_links_df.empty:
+                st.markdown("#### ❌ Товары без связанных данных Ozon")
+                st.warning(f"Найдено {len(saved_no_links_df)} товаров без связей с товарами Ozon")
+                
+                st.dataframe(
+                    saved_no_links_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'wb_sku': st.column_config.TextColumn('WB SKU', width="medium"),
+                        'issue': st.column_config.TextColumn('Проблема', width="large")
+                    }
+                )
+                
+                render_export_controls(saved_no_links_df, "no_links_items", "товары без связей")
+            
+            # Show items with low rating - ВСЕГДА показываем раздел
+            st.markdown("#### ⭐ Товары с низким рейтингом")
+            
+            if not saved_low_rating_df.empty:
+                st.error(f"🚨 Найдено {len(saved_low_rating_df)} товаров, для которых НЕ УДАЛОСЬ компенсировать рейтинг до {saved_min_group_rating}")
+                
+                st.dataframe(
+                    saved_low_rating_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'wb_sku': st.column_config.TextColumn('WB SKU', width="medium"),
+                        'avg_rating': st.column_config.NumberColumn('Рейтинг', format="%.2f", width="small"),
+                        'issue': st.column_config.TextColumn('Проблема', width="large")
+                    }
+                )
+                
+                render_export_controls(saved_low_rating_df, "low_rating_items", "товары с низким рейтингом")
+            else:
+                # Показываем статус даже если нет товаров с низким рейтингом
+                processed_count = saved_wb_skus_count - (len(saved_no_links_df) if not saved_no_links_df.empty else 0)
+                
+                if not saved_groups_df.empty:
+                    # Правильный подсчет: считаем уникальные группы, а не товары в группах
+                    unique_groups = saved_groups_df['merge_on_card'].nunique()
+                    high_rating_groups = saved_groups_df[saved_groups_df['group_recommendation'] == 'Высокий рейтинг - отдельная карточка']['merge_on_card'].nunique()
+                    compensated_groups = saved_groups_df[saved_groups_df['group_recommendation'] != 'Высокий рейтинг - отдельная карточка']['merge_on_card'].nunique()
+                    
+                    # ВАЖНО: Считаем только входные wb_sku пользователя, которые успешно попали в группы
+                    # Создаем список входных wb_sku из сессии (если есть)
+                    input_wb_skus = set()
+                    if 'advanced_input_wb_skus' in st.session_state:
+                        input_wb_skus = set(st.session_state['advanced_input_wb_skus'])
+                    
+                    # Если нет в сессии, считаем что все уникальные merge_on_card - это входные товары
+                    # (это приблизительная оценка для случаев когда сессия потеряна)
+                    if not input_wb_skus:
+                        # Пытаемся извлечь из merge_on_card первичные wb_sku
+                        primary_wb_skus = set()
+                        for merge_code in saved_groups_df['merge_on_card'].unique():
+                            # Для обычных групп merge_on_card содержит wb_sku основного товара
+                            if not str(merge_code).startswith('БракSH_'):
+                                primary_wb_skus.add(str(merge_code))
+                        input_wb_skus = primary_wb_skus
+                    
+                    # Подсчитываем сколько входных товаров успешно попало в группы
+                    successfully_grouped_input_items = 0
+                    for wb_sku in input_wb_skus:
+                        if str(wb_sku) in saved_groups_df['wb_sku'].astype(str).values or \
+                           str(wb_sku) in saved_groups_df['merge_on_card'].astype(str).values:
+                            successfully_grouped_input_items += 1
+                    
+                    st.success(f"✅ Все товары успешно обработаны:")
+                    st.write(f"• **{unique_groups} групп создано** ({high_rating_groups} с высоким рейтингом + {compensated_groups} со скомпенсированным рейтингом)")
+                    st.write(f"• **{successfully_grouped_input_items} входных товаров** из {processed_count} товаров с связями обработано успешно")
+                    
+                    # Проверяем корректность: все входные товары с связями должны быть в группах
+                    if processed_count != successfully_grouped_input_items:
+                        st.warning(f"⚠️ Есть расхождение в подсчетах товаров! Ожидалось {processed_count}, обработано {successfully_grouped_input_items}")
+                else:
+                    st.info("ℹ️ Групп не создано")
+            
+            # Summary and recommendations
+            st.markdown("---")
+            st.markdown("### 💡 Рекомендации")
+            
+            if not saved_groups_df.empty:
+                # Правильное вычисление success_rate: только входные товары пользователя
+                input_wb_skus = set()
+                if 'advanced_input_wb_skus' in st.session_state:
+                    input_wb_skus = set(st.session_state['advanced_input_wb_skus'])
+                
+                if input_wb_skus:
+                    # Считаем сколько входных товаров попало в группы
+                    successfully_grouped_count = 0
+                    for wb_sku in input_wb_skus:
+                        if str(wb_sku) in saved_groups_df['wb_sku'].astype(str).values or \
+                           str(wb_sku) in saved_groups_df['merge_on_card'].astype(str).values:
+                            successfully_grouped_count += 1
+                    
+                    success_rate = (successfully_grouped_count / len(input_wb_skus)) * 100
+                else:
+                    # Fallback: используем старую логику если нет данных о входных товарах
+                    success_rate = len(saved_groups_df['wb_sku'].unique()) / saved_wb_skus_count * 100
+                
+                if success_rate >= 80:
+                    st.success(f"🎉 **Отличный результат!** {success_rate:.1f}% входных товаров успешно сгруппированы")
+                elif success_rate >= 60:
+                    st.info(f"👍 **Хороший результат!** {success_rate:.1f}% входных товаров успешно сгруппированы")
+                else:
+                    st.warning(f"⚠️ **Требует внимания:** Только {success_rate:.1f}% входных товаров успешно сгруппированы")
+            
+            if not saved_no_links_df.empty:
+                st.info("💡 **Для товаров без связей:** Проверьте наличие общих штрихкодов с товарами Ozon")
+            
+            if not saved_low_rating_df.empty:
+                st.info("💡 **Для товаров с низким рейтингом:** Рассмотрите снижение минимального рейтинга или поиск дополнительных аналогичных товаров")
+            
+            # Кнопка очистки результатов
+            st.markdown("---")
+            if st.button("🗑️ Очистить результаты", key="clear_advanced_results", help="Очистить результаты и начать новую обработку"):
+                for key in ['advanced_results_ready', 'advanced_groups_df', 'advanced_no_links_df', 'advanced_low_rating_df', 'advanced_results_timestamp', 'advanced_wb_skus_count', 'advanced_min_group_rating', 'advanced_input_wb_skus']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+        
+        else:
+            st.info("👆 **Введите wb_sku выше для начала работы с расширенной группировкой**")
+
+with tab4:
     st.header("✏️ Редактирование существующих групп")
     
     st.markdown("""
@@ -1005,8 +1613,8 @@ with tab3:
                         
                     else:
                         st.warning("⚠️ Товары в группе не найдены")
-                
-                st.info("💡 **Для поиска конкретных групп используйте фильтры выше**")
+                    
+                    st.info("💡 **Для поиска конкретных групп используйте фильтры выше**")
 
 # --- Current Data Statistics ---
 if conn:

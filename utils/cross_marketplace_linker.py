@@ -74,9 +74,24 @@ class CrossMarketplaceLinker:
             
             # Убираем пустые штрихкоды и дубликаты (используем централизованную утилиту)
             from utils.data_cleaning import DataCleaningUtils
-            wb_barcodes_df, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
-                wb_barcodes_df, oz_barcodes_df
-            )
+            
+            # Для поиска по oz_vendor_codes используем более мягкую очистку
+            if oz_vendor_codes is not None:
+                # Мягкая очистка - только пустые штрихкоды, но НЕ удаляем дубликаты по sku+barcode
+                wb_barcodes_df = wb_barcodes_df[
+                    wb_barcodes_df['barcode'].notna() & 
+                    (wb_barcodes_df['barcode'].astype(str).str.strip() != '')
+                ].drop_duplicates()  # Только полные дубликаты
+                
+                oz_barcodes_df = oz_barcodes_df[
+                    oz_barcodes_df['barcode'].notna() & 
+                    (oz_barcodes_df['barcode'].astype(str).str.strip() != '')
+                ].drop_duplicates()  # Только полные дубликаты
+            else:
+                # Обычная агрессивная очистка для остальных случаев
+                wb_barcodes_df, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
+                    wb_barcodes_df, oz_barcodes_df
+                )
             
             # Объединяем по общим штрихкодам
             linked_df = pd.merge(wb_barcodes_df, oz_barcodes_df, on='barcode', how='inner')
@@ -201,7 +216,8 @@ class CrossMarketplaceLinker:
         """
         Получает связанные Ozon SKU с их рейтингами для заданных WB SKU.
         
-        Заменяет функцию get_wb_sku_ratings_with_oz_data из cards_matcher_helpers.py
+        ИСПРАВЛЕНИЕ: Теперь возвращает все wb_sku с связями Ozon, даже если нет рейтингов.
+        Это устраняет проблему "товаров без связей с товарами Ozon" когда связи есть, но рейтингов нет.
         
         Args:
             wb_skus: Список WB SKU
@@ -233,27 +249,24 @@ class CrossMarketplaceLinker:
             
             ratings_df = self.connection.execute(rating_query).fetchdf()
             
-            if ratings_df.empty:
-                return pd.DataFrame()
+            # ИСПРАВЛЕНИЕ: Не возвращаем пустой DataFrame если нет рейтингов!
+            # Вместо этого продолжаем с пустыми рейтингами для всех wb_sku с связями
             
-            # Объединяем связи с рейтингами
-            linked_df['oz_sku'] = linked_df['oz_sku'].astype(str)
-            ratings_df['oz_sku'] = ratings_df['oz_sku'].astype(str)
-            
-            merged_df = pd.merge(linked_df, ratings_df, on='oz_sku', how='inner')
-            
-            if merged_df.empty:
-                return pd.DataFrame()
-            
-            # Группируем по wb_sku и вычисляем агрегированные рейтинги
+            # Группируем по wb_sku и вычисляем агрегированные рейтинги или создаем записи без рейтингов
             result_list = []
-            for wb_sku in merged_df['wb_sku'].unique():
-                wb_data = merged_df[merged_df['wb_sku'] == wb_sku]
+            
+            for wb_sku in linked_df['wb_sku'].unique():
+                wb_links = linked_df[linked_df['wb_sku'] == wb_sku]
+                oz_skus_list = wb_links['oz_sku'].unique().tolist()
                 
-                if not wb_data.empty:
-                    oz_skus_list = wb_data['oz_sku'].unique().tolist()
-                    ratings = wb_data['rating'].dropna()
-                    reviews = wb_data['rev_number'].dropna()
+                # Если есть рейтинги для этого wb_sku, используем их
+                if not ratings_df.empty:
+                    linked_df['oz_sku'] = linked_df['oz_sku'].astype(str)
+                    ratings_df['oz_sku'] = ratings_df['oz_sku'].astype(str)
+                    
+                    wb_ratings = pd.merge(wb_links, ratings_df, on='oz_sku', how='left')
+                    ratings = wb_ratings['rating'].dropna()
+                    reviews = wb_ratings['rev_number'].dropna()
                     
                     result_list.append({
                         'wb_sku': wb_sku,
@@ -264,12 +277,39 @@ class CrossMarketplaceLinker:
                         'min_rating': ratings.min() if not ratings.empty else None,
                         'max_rating': ratings.max() if not ratings.empty else None
                     })
+                else:
+                    # Нет рейтингов, но есть связи - создаем запись с пустыми рейтингами
+                    result_list.append({
+                        'wb_sku': wb_sku,
+                        'avg_rating': None,
+                        'oz_sku_count': len(oz_skus_list),
+                        'oz_skus_list': ', '.join(oz_skus_list),
+                        'total_reviews': 0,
+                        'min_rating': None,
+                        'max_rating': None
+                    })
             
             return pd.DataFrame(result_list)
             
         except Exception as e:
             st.error(f"Ошибка получения рейтингов: {e}")
-            return pd.DataFrame()
+            # В случае ошибки все равно возвращаем wb_sku с связями, но без рейтингов
+            result_list = []
+            for wb_sku in linked_df['wb_sku'].unique():
+                wb_links = linked_df[linked_df['wb_sku'] == wb_sku]
+                oz_skus_list = wb_links['oz_sku'].unique().tolist()
+                
+                result_list.append({
+                    'wb_sku': wb_sku,
+                    'avg_rating': None,
+                    'oz_sku_count': len(oz_skus_list),
+                    'oz_skus_list': ', '.join(oz_skus_list),
+                    'total_reviews': 0,
+                    'min_rating': None,
+                    'max_rating': None
+                })
+            
+            return pd.DataFrame(result_list)
     
     def get_links_with_categories(
         self, 
@@ -635,6 +675,9 @@ class CrossMarketplaceLinker:
                 search_column = 'oz_sku'
             elif search_criterion == 'oz_vendor_code':
                 linked_df = self._normalize_and_merge_barcodes(oz_vendor_codes=search_values)
+                # Переименовываем колонку для единообразия с другими методами
+                if 'barcode' in linked_df.columns:
+                    linked_df = linked_df.rename(columns={'barcode': 'common_barcode'})
                 search_column = 'oz_vendor_code'
             elif search_criterion == 'barcode':
                 # Специальная обработка для поиска по штрихкоду
@@ -649,6 +692,12 @@ class CrossMarketplaceLinker:
             # Создаем результирующий DataFrame
             result_data = []
             
+            # Для поиска по oz_vendor_code убеждаемся, что включены все введенные значения
+            if search_criterion == 'oz_vendor_code':
+                # Фильтруем только те строки, которые соответствуют введенным vendor_codes
+                # Это гарантирует, что каждый введенный код поставщика будет в результатах
+                linked_df = linked_df[linked_df['oz_vendor_code'].isin(search_values)]
+            
             for _, row in linked_df.iterrows():
                 result_row = {}
                 
@@ -661,7 +710,7 @@ class CrossMarketplaceLinker:
                         continue
                         
                     if field_detail == "common_matched_barcode":
-                        result_row[field_label] = row.get('common_barcode', '')
+                        result_row[field_label] = row.get('common_barcode', row.get('barcode', ''))
                     elif isinstance(field_detail, tuple):
                         table_alias, column_name = field_detail
                         
@@ -671,7 +720,7 @@ class CrossMarketplaceLinker:
                         elif table_alias == 'wb_products' and column_name == 'wb_sku':
                             result_row[field_label] = row.get('wb_sku', '')
                         elif table_alias == 'oz_barcodes' and column_name == 'oz_barcode':
-                            result_row[field_label] = row.get('common_barcode', '')
+                            result_row[field_label] = row.get('common_barcode', row.get('barcode', ''))
                         else:
                             # Для других полей нужен дополнительный запрос
                             result_row[field_label] = self._get_additional_field_data(
@@ -684,21 +733,13 @@ class CrossMarketplaceLinker:
             
             results_df = pd.DataFrame(result_data)
             
-            # ИСПРАВЛЕНИЕ: Дополнительное удаление дубликатов в результатах поиска
-            # Особенно важно для поиска по oz_vendor_code, где могут быть дубликаты
+            # ИСПРАВЛЕНИЕ: Удаление дубликатов в результатах поиска
             if not results_df.empty:
-                # Удаляем дубликаты по ключевым полям в зависимости от типа поиска
                 if search_criterion == 'oz_vendor_code':
-                    # При поиске по vendor_code удаляем дубликаты по wb_sku
-                    wb_sku_col = None
-                    for label, detail in selected_fields_map.items():
-                        if isinstance(detail, tuple) and detail == ('wb_products', 'wb_sku'):
-                            wb_sku_col = label
-                            break
-                    
-                    if wb_sku_col and wb_sku_col in results_df.columns:
-                        # Удаляем дубликаты по wb_sku, оставляя первое вхождение
-                        results_df = results_df.drop_duplicates(subset=[wb_sku_col], keep='first')
+                    # При поиске по vendor_code НЕ удаляем дубликаты по wb_sku,
+                    # так как пользователь хочет видеть каждый введенный vendor_code
+                    # Удаляем только полные дубликаты строк
+                    results_df = results_df.drop_duplicates()
                 else:
                     # Для других типов поиска удаляем полные дубликаты
                     results_df = results_df.drop_duplicates()
