@@ -721,8 +721,15 @@ class CrossMarketplaceLinker:
                             result_row[field_label] = row.get('wb_sku', '')
                         elif table_alias == 'oz_barcodes' and column_name == 'oz_barcode':
                             result_row[field_label] = row.get('common_barcode', row.get('barcode', ''))
+                        elif table_alias == 'oz_category_products':
+                            # Дополнительный запрос для получения данных из oz_category_products
+                            try:
+                                query = f"SELECT {column_name} FROM oz_category_products WHERE oz_vendor_code = ?"
+                                cat_result = self.connection.execute(query, [row.get('oz_vendor_code')]).fetchdf()
+                                result_row[field_label] = str(cat_result.iloc[0, 0]) if not cat_result.empty else ''
+                            except Exception:
+                                result_row[field_label] = ''
                         else:
-                            # Для других полей нужен дополнительный запрос
                             result_row[field_label] = self._get_additional_field_data(
                                 row, table_alias, column_name
                             )
@@ -808,6 +815,14 @@ class CrossMarketplaceLinker:
                                         result_row[field_label] = oz_row.get(column_name, '')
                                     elif table_alias == 'oz_barcodes' and column_name == 'oz_barcode':
                                         result_row[field_label] = barcode
+                                    elif table_alias == 'oz_category_products':
+                                        # Дополнительный запрос для получения данных из oz_category_products
+                                        try:
+                                            query = f"SELECT {column_name} FROM oz_category_products WHERE oz_vendor_code = ?"
+                                            cat_result = self.connection.execute(query, [oz_row.get('oz_vendor_code')]).fetchdf()
+                                            result_row[field_label] = str(cat_result.iloc[0, 0]) if not cat_result.empty else ''
+                                        except Exception:
+                                            result_row[field_label] = ''
                                     else:
                                         result_row[field_label] = ''
                                 else:
@@ -837,6 +852,12 @@ class CrossMarketplaceLinker:
             elif table_alias == 'wb_prices':
                 query = f"SELECT {column_name} FROM wb_prices WHERE wb_sku = ?"
                 result = self.connection.execute(query, [row.get('wb_sku')]).fetchdf()
+                return str(result.iloc[0, 0]) if not result.empty else ''
+                
+            elif table_alias == 'oz_category_products':
+                # Связывается через oz_vendor_code
+                query = f"SELECT {column_name} FROM oz_category_products WHERE oz_vendor_code = ?"
+                result = self.connection.execute(query, [row.get('oz_vendor_code')]).fetchdf()
                 return str(result.iloc[0, 0]) if not result.empty else ''
                 
             return ''

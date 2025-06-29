@@ -6,6 +6,13 @@ This page allows users to:
 - Input search values (single or multiple).
 - Select which information fields to display for matched products.
 - View results in a table.
+
+NEW FEATURES:
+- Added support for oz_category_products table fields:
+  * merge_on_card - Объединить на карточке
+  * color_name - Название цвета  
+  * manufacturer_size - Размер производителя
+- These fields are linked via oz_vendor_code and are optional (not in default selection).
 """
 import streamlit as st
 from utils.db_connection import connect_db
@@ -52,6 +59,8 @@ search_values_input = st.text_area(
 st.markdown("---")
 st.subheader("Information to Display")
 
+st.info("💡 **Новинка**: Теперь доступны дополнительные поля из детальных характеристик товаров Ozon (таблица oz_category_products), включая объединение на карточке, название цвета и размер производителя.")
+
 # Define all possible fields that can be displayed
 # Keys are user-friendly labels, values are (table_alias, column_name_in_db) or special identifiers
 # This will be used later to construct the SELECT part of the SQL query dynamically
@@ -67,7 +76,10 @@ ozon_fields_options = {
     "Ozon: Статус (oz_product_status)": ("oz_products", "oz_product_status"),
     "Ozon: Цена (oz_actual_price)": ("oz_products", "oz_actual_price"),
     "Ozon: Остаток (oz_fbo_stock)": ("oz_products", "oz_fbo_stock"),
-    "Ozon: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode") # From oz_barcodes table
+    "Ozon: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode"), # From oz_barcodes table
+    "Ozon: Объединить на карточке (merge_on_card)": ("oz_category_products", "merge_on_card"), # From oz_category_products table
+    "Ozon: Название цвета (color_name)": ("oz_category_products", "color_name"), # From oz_category_products table
+    "Ozon: Размер производителя (manufacturer_size)": ("oz_category_products", "manufacturer_size") # From oz_category_products table
 }
 
 # Wildberries Fields

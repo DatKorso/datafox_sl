@@ -384,6 +384,8 @@ with tab2:
     st.info("""
     **Цель инструмента:** Найти товары в рамках одного WB SKU, у которых отличаются названия цветов в поле `color_name`.
     Это поможет выявить inconsistent данные и исправить их для улучшения качества карточек.
+    
+    **Дополнительно:** В разделе стандартизации цветов можно обработать как товары с расхождениями, так и все товары с связанными WB SKU.
     """)
     
     # Initialize session state for color analysis results
@@ -718,10 +720,14 @@ with tab2:
     st.divider()
     st.header("🔧 Инструмент массовой стандартизации названий цветов")
     st.info("""
-    **Цель инструмента:** Автоматически генерировать стандартизированные названия цветов для товаров с расхождениями.
+    **Цель инструмента:** Автоматически генерировать стандартизированные названия цветов.
+    
+    **Режимы работы:**
+    - **Все товары:** Обрабатывает все товары из oz_category_products, связанные с WB SKU
+    - **Только расхождения:** Обрабатывает только товары с найденными расхождениями в названиях цветов
     
     **Принцип работы:**
-    - Берется минимальное значение `sort` из `punta_table` для каждого WB SKU
+    - Берется максимальное значение `sort` из `punta_table` для каждого WB SKU
     - К значению `sort` добавляется порядковый номер позиции в рамках этого `sort`
     - Формат результата: `{цвет}; {sort}-{позиция}`
     
@@ -736,37 +742,100 @@ with tab2:
 
     # Функции для стандартизации
     @st.cache_data
-    def generate_standardized_color_names(_db_connection, discrepancies_df, details_df):
+    def generate_standardized_color_names(_db_connection, discrepancies_df=None, details_df=None, use_all_products=False):
         """
         Генерирует стандартизированные названия цветов на основе punta_table.sort
         
         Args:
             _db_connection: Соединение с базой данных
-            discrepancies_df: DataFrame с расхождениями
-            details_df: DataFrame с деталями товаров
+            discrepancies_df: DataFrame с расхождениями (используется если use_all_products=False)
+            details_df: DataFrame с деталями товаров (используется если use_all_products=False)
+            use_all_products: Если True, обрабатывает все товары из oz_category_products
             
         Returns:
             DataFrame с результатами стандартизации
         """
-        if discrepancies_df.empty or details_df.empty:
-            return pd.DataFrame()
-        
         try:
-            # Получаем все WB SKU с расхождениями
-            wb_skus_with_discrepancies = discrepancies_df['wb_sku'].unique().tolist()
+            if use_all_products:
+                # Получаем все товары с данными о цветах и связи с WB через CrossMarketplaceLinker
+                from utils.cross_marketplace_linker import CrossMarketplaceLinker
+                
+                linker = CrossMarketplaceLinker(_db_connection)
+                
+                # Получаем все связи
+                all_links_df = linker.get_bidirectional_links()
+                
+                if all_links_df.empty:
+                    st.warning("Не найдено связей между WB и Ozon товарами")
+                    return pd.DataFrame()
+                
+                # Получаем oz_vendor_code для поиска в oz_category_products
+                oz_vendor_codes = all_links_df['oz_vendor_code'].unique().tolist()
+                
+                if not oz_vendor_codes:
+                    st.warning("Не найдено Ozon vendor codes")
+                    return pd.DataFrame()
+                
+                # Запрос для получения всех данных о цветах из oz_category_products
+                color_query = f"""
+                SELECT DISTINCT
+                    ocp.oz_vendor_code,
+                    ocp.color_name,
+                    ocp.product_name,
+                    ocp.oz_brand,
+                    ocp.color,
+                    ocp.russian_size,
+                    ocp.oz_actual_price
+                FROM oz_category_products ocp
+                WHERE ocp.oz_vendor_code IN ({', '.join(['?'] * len(oz_vendor_codes))})
+                    AND ocp.color_name IS NOT NULL 
+                    AND TRIM(ocp.color_name) != ''
+                    AND TRIM(ocp.color_name) != 'NULL'
+                ORDER BY ocp.oz_vendor_code
+                """
+                
+                color_df = _db_connection.execute(color_query, oz_vendor_codes).fetchdf()
+                
+                if color_df.empty:
+                    st.warning("Не найдено данных о цветах для товаров Ozon")
+                    return pd.DataFrame()
+                
+                # Объединяем данные о связях с данными о цветах
+                all_products_df = pd.merge(
+                    all_links_df[['wb_sku', 'oz_vendor_code']], 
+                    color_df, 
+                    on='oz_vendor_code', 
+                    how='inner'
+                )
+                
+                if all_products_df.empty:
+                    return pd.DataFrame()
+                
+                # Получаем уникальные WB SKU для обработки
+                wb_skus_to_process = all_products_df['wb_sku'].unique().tolist()
+                working_details_df = all_products_df
+                
+            else:
+                # Используем данные с расхождениями (старый метод)
+                if discrepancies_df is None or details_df is None or discrepancies_df.empty or details_df.empty:
+                    return pd.DataFrame()
+                
+                # Получаем все WB SKU с расхождениями
+                wb_skus_to_process = discrepancies_df['wb_sku'].unique().tolist()
+                working_details_df = details_df
             
-            if not wb_skus_with_discrepancies:
+            if not wb_skus_to_process:
                 return pd.DataFrame()
             
             # Запрос для получения данных из punta_table с sort и позициями
             punta_query = f"""
             WITH wb_sku_with_max_sort AS (
-                -- Сначала находим максимальный sort для каждого wb_sku из расхождений
+                -- Сначала находим максимальный sort для каждого wb_sku
                 SELECT 
                     wb_sku,
                     MAX(sort) as max_sort
                 FROM punta_table 
-                WHERE CAST(wb_sku AS VARCHAR) IN ({', '.join(['?'] * len(wb_skus_with_discrepancies))})
+                WHERE CAST(wb_sku AS VARCHAR) IN ({', '.join(['?'] * len(wb_skus_to_process))})
                     AND sort IS NOT NULL
                     AND TRIM(CAST(sort AS VARCHAR)) != ''
                 GROUP BY wb_sku
@@ -786,7 +855,7 @@ with tab2:
                 GROUP BY wb_sku, sort
             ),
             final_positions AS (
-                -- Соединяем wb_sku из расхождений с их позициями в полных группах sort
+                -- Соединяем wb_sku с их позициями в полных группах sort
                 SELECT 
                     w.wb_sku,
                     w.max_sort as sort,
@@ -800,7 +869,7 @@ with tab2:
             ORDER BY sort, position_in_sort
             """
             
-            punta_df = _db_connection.execute(punta_query, wb_skus_with_discrepancies).fetchdf()
+            punta_df = _db_connection.execute(punta_query, wb_skus_to_process).fetchdf()
             
             if punta_df.empty:
                 st.warning("⚠️ После обработки не найдено валидных данных sort")
@@ -809,19 +878,19 @@ with tab2:
             # Создаем маппинг wb_sku -> стандартизированный идентификатор
             wb_sku_to_standard_id = {}
             for _, row in punta_df.iterrows():
-                # Приводим wb_sku к строке и убираем .0 если есть (для совпадения с данными расхождений)
+                # Приводим wb_sku к строке и убираем .0 если есть (для совпадения с данными)
                 wb_sku = str(row['wb_sku']).split('.')[0]
                 sort_val = int(row['sort'])
                 position = int(row['position_in_sort'])
                 standard_id = f"{sort_val}-{position}"
                 wb_sku_to_standard_id[wb_sku] = standard_id
             
-            # Обрабатываем товары с расхождениями
+            # Обрабатываем товары
             standardization_results = []
             
-            for wb_sku in wb_skus_with_discrepancies:
+            for wb_sku in wb_skus_to_process:
                 wb_sku_str = str(wb_sku)
-                wb_sku_details = details_df[details_df['wb_sku'] == wb_sku_str]
+                wb_sku_details = working_details_df[working_details_df['wb_sku'] == wb_sku_str]
                 
                 if wb_sku_details.empty:
                     continue
@@ -865,40 +934,88 @@ with tab2:
             st.error(f"Ошибка при генерации стандартизированных названий: {e}")
             return pd.DataFrame()
 
-    # Проверяем, есть ли данные для стандартизации
-    if (st.session_state.color_analysis_completed and 
-        not st.session_state.color_analysis_discrepancies_df.empty):
+    # Раздел стандартизации (доступен всегда)
+    st.subheader("🎯 Генерация стандартизированных названий цветов")
+    
+    # Опции выбора данных для стандартизации
+    st.write("**Выберите источник данных для стандартизации:**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        use_all_products = st.checkbox(
+            "🌍 Использовать все товары с связанными WB SKU",
+            value=False,
+            help="Обработать все товары из oz_category_products, которые связаны с WB SKU",
+            key="use_all_products_standardization"
+        )
+    
+    with col2:
+        can_use_discrepancies = (st.session_state.color_analysis_completed and 
+                                not st.session_state.color_analysis_discrepancies_df.empty)
         
-        st.subheader("🎯 Генерация стандартизированных названий цветов")
-        
+        use_only_discrepancies = st.checkbox(
+            "⚠️ Использовать только товары с расхождениями",
+            value=can_use_discrepancies and not use_all_products,
+            disabled=not can_use_discrepancies or use_all_products,
+            help="Обработать только товары с найденными расхождениями в названиях цветов",
+            key="use_discrepancies_only"
+        )
+    
+    # Информация о выбранном режиме
+    if use_all_products:
+        st.info("📋 **Режим: Все товары** - будут обработаны все товары из oz_category_products, связанные с WB SKU")
+    elif use_only_discrepancies and can_use_discrepancies:
         discrepancies_df = st.session_state.color_analysis_discrepancies_df
-        details_df = st.session_state.color_analysis_details_df
-        
-        st.write(f"**Найдено {len(discrepancies_df)} WB SKU с расхождениями в названиях цветов.**")
-        st.write("Нажмите кнопку ниже для генерации стандартизированных названий.")
-        
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
-            if st.button("🔧 Генерировать стандартизированные названия", type="primary", key="generate_standardized_names"):
-                with st.spinner("Генерируем стандартизированные названия цветов..."):
+        st.info(f"📋 **Режим: Только расхождения** - будет обработано {len(discrepancies_df)} WB SKU с расхождениями в названиях цветов")
+    else:
+        st.warning("⚠️ **Недоступно** - выберите режим обработки или выполните анализ расхождений")
+    
+    # Кнопка генерации (доступна если выбран валидный режим)
+    can_generate = use_all_products or (use_only_discrepancies and can_use_discrepancies)
+    
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        if st.button(
+            "🔧 Генерировать стандартизированные названия", 
+            type="primary", 
+            disabled=not can_generate,
+            key="generate_standardized_names"
+        ):
+            with st.spinner("Генерируем стандартизированные названия цветов..."):
+                if use_all_products:
+                    # Режим всех товаров
                     standardization_results = generate_standardized_color_names(
-                        db_connection, discrepancies_df, details_df
+                        db_connection, 
+                        use_all_products=True
                     )
-                    
-                    if not standardization_results.empty:
-                        st.session_state.standardization_completed = True
-                        st.session_state.standardization_results_df = standardization_results
-                        st.success(f"✅ Генерация завершена! Обработано {len(standardization_results)} товаров.")
-                    else:
-                        st.error("❌ Не удалось сгенерировать стандартизированные названия.")
-        
-        with col2:
-            if st.session_state.standardization_completed:
-                if st.button("🔄 Очистить результаты стандартизации", key="clear_standardization"):
-                    st.session_state.standardization_completed = False
-                    st.session_state.standardization_results_df = pd.DataFrame()
-                    st.rerun()
+                elif use_only_discrepancies:
+                    # Режим только расхождений
+                    discrepancies_df = st.session_state.color_analysis_discrepancies_df
+                    details_df = st.session_state.color_analysis_details_df
+                    standardization_results = generate_standardized_color_names(
+                        db_connection, 
+                        discrepancies_df=discrepancies_df, 
+                        details_df=details_df,
+                        use_all_products=False
+                    )
+                else:
+                    standardization_results = pd.DataFrame()
+                
+                if not standardization_results.empty:
+                    st.session_state.standardization_completed = True
+                    st.session_state.standardization_results_df = standardization_results
+                    st.success(f"✅ Генерация завершена! Обработано {len(standardization_results)} товаров.")
+                else:
+                    st.error("❌ Не удалось сгенерировать стандартизированные названия.")
+    
+    with col2:
+        if st.session_state.standardization_completed:
+            if st.button("🔄 Очистить результаты стандартизации", key="clear_standardization"):
+                st.session_state.standardization_completed = False
+                st.session_state.standardization_results_df = pd.DataFrame()
+                st.rerun()
         
         # Отображаем результаты стандартизации
         if st.session_state.standardization_completed and not st.session_state.standardization_results_df.empty:
@@ -1028,21 +1145,8 @@ with tab2:
             
             **Важно:** Перед применением изменений создайте резервную копию данных!
             """)
-    
-    else:
-        st.info("💡 Для использования инструмента стандартизации сначала выполните анализ расхождений и убедитесь, что найдены товары с расхождениями в названиях цветов.")
-
-            # Кнопка для генерации стандартизированных названий
-        if st.button("🎯 Запустить стандартизацию цветов", 
-                   key="run_standardization", 
-                   use_container_width=True):
-            
-            with st.spinner('🔄 Генерируем стандартизированные названия цветов...'):
-                standardization_df = generate_standardized_color_names(
-                    db_connection, 
-                    st.session_state.color_discrepancy_results, 
-                    st.session_state.color_discrepancy_details
-                )
+        else:
+            st.info("💡 Для использования инструмента стандартизации выберите один из доступных режимов обработки выше.")
 
 # Close database connection
 db_connection.close() 
