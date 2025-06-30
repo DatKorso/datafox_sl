@@ -305,23 +305,7 @@ class AdvancedProductGrouper:
                 processed_items.add(wb_sku)
                 continue
             
-            # Проверяем, нужна ли группа для этого товара
-            item_rating = item.get('avg_rating', 0) or 0
-            if item_rating >= config.min_group_rating:
-                # Товар с достаточным рейтингом создаем как отдельную группу
-                single_item_group = {
-                    'group_id': len(groups) + 1,
-                    'items': [item.to_dict()],
-                    'group_rating': item_rating,
-                    'item_count': 1,
-                    'main_wb_sku': wb_sku
-                }
-                groups.append(single_item_group)
-                processed_items.add(wb_sku)
-                self._log(f"Приоритетный товар {wb_sku} имеет достаточный рейтинг {item_rating:.2f}, создана отдельная группа")
-                continue
-            
-            # Создаем новую группу на основе приоритетного товара
+            # Создаем группу для приоритетного товара (одиночную или с компенсаторами)
             group = self._create_single_group(item, data, config, compensator_pools, processed_items)
             
             if group:
@@ -590,11 +574,21 @@ class AdvancedProductGrouper:
         processed_items: Set[str]
     ) -> Optional[Dict[str, Any]]:
         """Создает одну группу товаров с оптимальной стратегией."""
-        # Проверяем, нужна ли группа для этого товара
+        # Проверяем рейтинг основного товара
         main_item_rating = main_item.get('avg_rating', 0) or 0
+        main_item_dict = main_item.to_dict()
+        
+        # Если у приоритетного товара достаточный рейтинг, создаем группу из одного товара
         if main_item_rating >= config.min_group_rating:
-            self._log(f"Товар {main_item['wb_sku']} имеет рейтинг {main_item_rating:.2f} >= {config.min_group_rating}, группа не нужна")
-            return None
+            group = {
+                'group_id': len(processed_items) + 1,
+                'items': [main_item_dict],
+                'group_rating': main_item_rating,
+                'item_count': 1,
+                'main_wb_sku': main_item['wb_sku']
+            }
+            self._log(f"Приоритетный товар {main_item['wb_sku']} имеет достаточный рейтинг {main_item_rating:.2f}, создана одиночная группа")
+            return group
             
         # Отладочная информация
         self._log(f"Колонки в main_item: {list(main_item.index)}")
@@ -606,29 +600,8 @@ class AdvancedProductGrouper:
         self._log(f"Ключи в main_item_dict: {list(main_item_dict.keys())}")
         self._log(f"wb_category в main_item_dict: {'wb_category' in main_item_dict}")
         
+        # Для приоритетного товара с низким рейтингом создаем группу только с компенсаторами
         group_items = [main_item_dict]
-        
-        # Ищем похожие товары для группы
-        similar_items = self._find_similar_items(
-            main_item, all_data, config.grouping_columns, processed_items
-        )
-        
-        # Добавляем похожие товары по одному, проверяя рейтинг
-        for similar_item in similar_items:
-            if len(group_items) >= config.max_wb_sku_per_group:
-                break
-            
-            # Временно добавляем товар для проверки рейтинга
-            temp_group = group_items + [similar_item.to_dict()]
-            temp_rating = self._calculate_group_rating(temp_group)
-            
-            # Если рейтинг уже достаточный, останавливаемся
-            if temp_rating >= config.min_group_rating:
-                group_items = temp_group
-                break
-            else:
-                # Иначе добавляем товар и продолжаем
-                group_items.append(similar_item.to_dict())
         
         # Вычисляем текущий рейтинг группы
         group_rating = self._calculate_group_rating(group_items)
@@ -681,40 +654,7 @@ class AdvancedProductGrouper:
         
         return group
     
-    def _find_similar_items(
-        self, 
-        main_item: pd.Series, 
-        all_data: pd.DataFrame, 
-        grouping_columns: List[str],
-        processed_items: Set[str]
-    ) -> List[pd.Series]:
-        """Находит похожие приоритетные товары для группировки.
-        
-        Ищет только среди приоритетных товаров для формирования основы группы.
-        """
-        similar = []
-        
-        # Фильтруем только приоритетные товары
-        priority_data = all_data[all_data.get('is_priority_item', False)]
-        
-        for _, item in priority_data.iterrows():
-            if item['wb_sku'] in processed_items or item['wb_sku'] == main_item['wb_sku']:
-                continue
-            
-            # Проверяем совпадение по группировочным колонкам
-            is_similar = True
-            for col in grouping_columns:
-                if col in main_item and col in item:
-                    if pd.isna(main_item[col]) and pd.isna(item[col]):
-                        continue
-                    if main_item[col] != item[col]:
-                        is_similar = False
-                        break
-            
-            if is_similar:
-                similar.append(item)
-        
-        return similar
+
     
     def _add_minimal_compensators(
         self,
