@@ -98,19 +98,56 @@ def get_photo_urls_batch(wb_skus: List[str]) -> List[str]:
     return photo_urls
 
 
-def render_styled_table_with_photos(df: pd.DataFrame, table_id: str = "product-table") -> str:
-    """Создает стилизованный HTML для таблицы с фотографиями.
+def render_styled_table_with_photos(df: pd.DataFrame, table_id: str = "product-table"):
+    """Отображает стилизованную таблицу с фотографиями.
     
     Args:
         df: DataFrame для отображения
         table_id: ID для CSS класса таблицы
-        
-    Returns:
-        str: HTML код стилизованной таблицы
     """
-    css = get_table_css()
-    html = df.to_html(escape=False, classes=f"{table_id} product-table", table_id=table_id)
-    return css + html
+    if df.empty:
+        st.warning("Нет данных для отображения")
+        return
+    
+    # Простой HTML без сложных стилей
+    try:
+        # Генерируем упрощенный HTML
+        html_parts = ["<div style='margin: 10px 0;'>"]
+        html_parts.append("<table style='width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px;'>")
+        
+        # Заголовки
+        html_parts.append("<thead style='background-color: #f0f2f6;'>")
+        html_parts.append("<tr>")
+        for col in df.columns:
+            html_parts.append(f"<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>{col}</th>")
+        html_parts.append("</tr>")
+        html_parts.append("</thead>")
+        
+        # Данные
+        html_parts.append("<tbody>")
+        for _, row in df.iterrows():
+            html_parts.append("<tr style='border-bottom: 1px solid #eee;'>")
+            for col in df.columns:
+                value = row[col]
+                if col == "Фото":
+                    # Специальная обработка для колонки с фотографиями
+                    html_parts.append(f"<td style='padding: 4px; text-align: center; border: 1px solid #ddd;'>{value}</td>")
+                else:
+                    html_parts.append(f"<td style='padding: 8px; border: 1px solid #ddd;'>{value}</td>")
+            html_parts.append("</tr>")
+        html_parts.append("</tbody>")
+        
+        html_parts.append("</table>")
+        html_parts.append("</div>")
+        
+        # Объединяем и отображаем
+        full_html = "".join(html_parts)
+        st.html(full_html)
+        
+    except Exception as e:
+        st.error(f"Ошибка отображения таблицы: {str(e)}")
+        # Fallback - используем обычный st.dataframe без фотографий
+        st.dataframe(df, use_container_width=True)
 
 
 def render_grouping_configuration() -> GroupingConfig:
@@ -474,8 +511,7 @@ def render_product_groups(groups: List[Dict[str, Any]]):
                 styled_df = display_df.style.apply(highlight_priority_items, axis=1)
                 
                 # Отображаем стилизованную таблицу с фотографиями
-                styled_html = render_styled_table_with_photos(display_df, f"group-{group['group_id']}")
-                st.write(styled_html, unsafe_allow_html=True)
+                render_styled_table_with_photos(display_df, f"group-{group['group_id']}")
                 
                 # Дополнительная информация о группе
                 st.markdown("**Легенда:**")
@@ -541,8 +577,7 @@ def render_problematic_items(
                     display_df['Приоритетный'] = display_df['Приоритетный'].map({True: '✅ Да', False: '❌ Нет'})
                 
                 # Отображаем стилизованную таблицу с фотографиями
-                styled_html = render_styled_table_with_photos(display_df, "low-rating-items")
-                st.write(styled_html, unsafe_allow_html=True)
+                render_styled_table_with_photos(display_df, "low-rating-items")
                 
                 # Показываем статистику
                 priority_count = sum(1 for item in low_rating_items if item.get('is_priority_item', False))
@@ -589,8 +624,7 @@ def render_problematic_items(
                     display_df['Приоритетный'] = display_df['Приоритетный'].map({True: '✅ Да', False: '❌ Нет'})
                 
                 # Отображаем стилизованную таблицу с фотографиями
-                styled_html = render_styled_table_with_photos(display_df, "defective-items")
-                st.write(styled_html, unsafe_allow_html=True)
+                render_styled_table_with_photos(display_df, "defective-items")
                 
                 # Показываем статистику
                 priority_count = sum(1 for item in defective_items if item.get('is_priority_item', False))
