@@ -11,6 +11,106 @@ import streamlit as st
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from utils.advanced_product_grouper import GroupingConfig, GroupingResult
+from utils.wb_photo_service import get_wb_photo_url
+
+
+def get_table_css() -> str:
+    """Возвращает CSS стили для таблиц с фотографиями."""
+    return """
+    <style>
+    .product-table {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        border-collapse: collapse;
+        width: 100%;
+        margin: 10px 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .product-table th {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        font-weight: 600;
+        padding: 12px 8px;
+        text-align: left;
+        font-size: 14px;
+    }
+    
+    .product-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #e9ecef;
+        vertical-align: middle;
+        font-size: 13px;
+    }
+    
+    .product-table tr:hover {
+        background-color: #f8f9fa;
+    }
+    
+    .product-table tr:nth-child(even) {
+        background-color: #fbfcfd;
+    }
+    
+    .product-table td:first-child {
+        text-align: center;
+        width: 80px;
+    }
+    
+    .product-table img {
+        transition: transform 0.2s ease;
+        cursor: pointer;
+    }
+    
+    .product-table img:hover {
+        transform: scale(1.1);
+    }
+    </style>
+    """
+
+
+@st.cache_data(ttl=3600)  # Кэшируем на 1 час
+def get_photo_urls_batch(wb_skus: List[str]) -> List[str]:
+    """Оптимизированное получение URL фотографий для списка WB SKU.
+    
+    Args:
+        wb_skus: Список WB SKU
+        
+    Returns:
+        List[str]: Список HTML элементов с фотографиями
+    """
+    photo_urls = []
+    for sku in wb_skus:
+        try:
+            photo_url = get_wb_photo_url(sku)
+            if photo_url:
+                # Создаем HTML для изображения с lazy loading
+                img_html = (f'<img src="{photo_url}" width="60" height="60" '
+                          f'style="object-fit: cover; border-radius: 5px; '
+                          f'border: 1px solid #ddd;" loading="lazy" '
+                          f'alt="Товар {sku}" title="WB SKU: {sku}">')
+                photo_urls.append(img_html)
+            else:
+                photo_urls.append('<div style="width:60px;height:60px;background:#f0f0f0;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;">🚫 Нет фото</div>')
+        except Exception as e:
+            photo_urls.append('<div style="width:60px;height:60px;background:#ffe6e6;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;">❌ Ошибка</div>')
+    
+    return photo_urls
+
+
+def render_styled_table_with_photos(df: pd.DataFrame, table_id: str = "product-table") -> str:
+    """Создает стилизованный HTML для таблицы с фотографиями.
+    
+    Args:
+        df: DataFrame для отображения
+        table_id: ID для CSS класса таблицы
+        
+    Returns:
+        str: HTML код стилизованной таблицы
+    """
+    css = get_table_css()
+    html = df.to_html(escape=False, classes=f"{table_id} product-table", table_id=table_id)
+    return css + html
 
 
 def render_grouping_configuration() -> GroupingConfig:
@@ -315,7 +415,6 @@ def render_product_groups(groups: List[Dict[str, Any]]):
             # Создаем DataFrame для отображения
             items_df = pd.DataFrame(group['items'])
             
-
             # Выбираем колонки для отображения
             display_columns = ['wb_sku', 'avg_rating', 'total_stock', 'is_priority_item']
             if 'gender' in items_df.columns:
@@ -333,6 +432,14 @@ def render_product_groups(groups: List[Dict[str, Any]]):
             if available_columns:
                 # Подготавливаем данные для отображения
                 display_df = items_df[available_columns].copy()
+                
+                # Добавляем столбец с URL изображений в начало
+                if 'wb_sku' in display_df.columns:
+                    wb_skus = display_df['wb_sku'].astype(str).tolist()
+                    # Используем оптимизированную функцию пакетного получения фото
+                    photo_urls = get_photo_urls_batch(wb_skus)
+                    # Вставляем столбец с фото в начало
+                    display_df.insert(0, 'Фото', photo_urls)
                 
                 # Сохраняем оригинальную колонку для стилизации
                 original_priority = display_df['is_priority_item'].copy() if 'is_priority_item' in display_df.columns else None
@@ -366,11 +473,9 @@ def render_product_groups(groups: List[Dict[str, Any]]):
                 # Применяем стилизацию
                 styled_df = display_df.style.apply(highlight_priority_items, axis=1)
                 
-                st.dataframe(
-                    styled_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                # Отображаем стилизованную таблицу с фотографиями
+                styled_html = render_styled_table_with_photos(display_df, f"group-{group['group_id']}")
+                st.write(styled_html, unsafe_allow_html=True)
                 
                 # Дополнительная информация о группе
                 st.markdown("**Легенда:**")
@@ -411,6 +516,15 @@ def render_problematic_items(
                 # Подготавливаем данные для отображения
                 display_df = df[available_columns].copy()
                 
+                # Добавляем столбец с URL изображений в начало
+                if 'wb_sku' in display_df.columns:
+                    wb_skus = display_df['wb_sku'].astype(str).tolist()
+                    # Используем оптимизированную функцию пакетного получения фото (меньший размер)
+                    photo_urls = [url.replace('width="60" height="60"', 'width="50" height="50"') 
+                                for url in get_photo_urls_batch(wb_skus)]
+                    # Вставляем столбец с фото в начало
+                    display_df.insert(0, 'Фото', photo_urls)
+                
                 # Переименовываем колонки
                 column_names = {
                     'wb_sku': 'WB SKU',
@@ -426,7 +540,9 @@ def render_problematic_items(
                 if 'Приоритетный' in display_df.columns:
                     display_df['Приоритетный'] = display_df['Приоритетный'].map({True: '✅ Да', False: '❌ Нет'})
                 
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                # Отображаем стилизованную таблицу с фотографиями
+                styled_html = render_styled_table_with_photos(display_df, "low-rating-items")
+                st.write(styled_html, unsafe_allow_html=True)
                 
                 # Показываем статистику
                 priority_count = sum(1 for item in low_rating_items if item.get('is_priority_item', False))
@@ -448,6 +564,15 @@ def render_problematic_items(
                 # Подготавливаем данные для отображения
                 display_df = df[available_columns].copy()
                 
+                # Добавляем столбец с URL изображений в начало
+                if 'wb_sku' in display_df.columns:
+                    wb_skus = display_df['wb_sku'].astype(str).tolist()
+                    # Используем оптимизированную функцию пакетного получения фото (меньший размер)
+                    photo_urls = [url.replace('width="60" height="60"', 'width="50" height="50"') 
+                                for url in get_photo_urls_batch(wb_skus)]
+                    # Вставляем столбец с фото в начало
+                    display_df.insert(0, 'Фото', photo_urls)
+                
                 # Переименовываем колонки
                 column_names = {
                     'wb_sku': 'WB SKU',
@@ -463,7 +588,9 @@ def render_problematic_items(
                 if 'Приоритетный' in display_df.columns:
                     display_df['Приоритетный'] = display_df['Приоритетный'].map({True: '✅ Да', False: '❌ Нет'})
                 
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                # Отображаем стилизованную таблицу с фотографиями
+                styled_html = render_styled_table_with_photos(display_df, "defective-items")
+                st.write(styled_html, unsafe_allow_html=True)
                 
                 # Показываем статистику
                 priority_count = sum(1 for item in defective_items if item.get('is_priority_item', False))
