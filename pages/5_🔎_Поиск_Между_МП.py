@@ -17,6 +17,7 @@ NEW FEATURES:
 import streamlit as st
 from utils.db_connection import connect_db
 from utils.cross_marketplace_linker import CrossMarketplaceLinker
+from utils.wb_photo_service import get_wb_photo_url
 import pandas as pd
 
 st.set_page_config(page_title="Cross-Marketplace Search - Marketplace Analyzer", layout="wide")
@@ -152,6 +153,39 @@ if st.button("🚀 Найти совпадающие товары", type="primar
         st.markdown("### Результаты Поиска")
         if not results_df.empty:
             st.success(f"Найдено {len(results_df)} совпадений.")
+            
+            # Добавляем фотографии товаров WB в первый столбец
+            def add_product_photos(df):
+                """Добавляет столбец с фотографиями товаров WB в начало таблицы."""
+                # Ищем столбец с WB SKU
+                wb_sku_column = None
+                for col in df.columns:
+                    if 'wb_sku' in str(col).lower() or 'артикул wb' in str(col).lower():
+                        wb_sku_column = col
+                        break
+                
+                if wb_sku_column and wb_sku_column in df.columns:
+                    # Создаем столбец с HTML для отображения фотографий
+                    def get_photo_html(wb_sku):
+                        if pd.isna(wb_sku) or str(wb_sku).strip() == '':
+                            return "🚫 Нет SKU"
+                        
+                        try:
+                            photo_url = get_wb_photo_url(str(wb_sku))
+                            if photo_url:
+                                return f'<a href="https://www.wildberries.ru/catalog/{wb_sku}/detail.aspx" target="_blank"><img src="{photo_url}" style="width: 32px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd;"></a>'
+                            else:
+                                return "🖼️ Нет фото"
+                        except Exception as e:
+                            return "❌ Ошибка"
+                    
+                    # Добавляем столбец с фотографиями в начало
+                    df_with_photos = df.copy()
+                    df_with_photos.insert(0, '📷 Фото товара', df_with_photos[wb_sku_column].apply(get_photo_html))
+                    return df_with_photos
+                
+                return df
+            
             # Reorder columns to have "Search_Value" first, then others as selected by user
             # The find_cross_marketplace_matches function already aliases the search criterion column to "Search_Value"
             # and other columns to their UI labels.
@@ -174,7 +208,20 @@ if st.button("🚀 Найти совпадающие товары", type="primar
                         ordered_cols.append(col)
                 results_df = results_df[ordered_cols]
             
-            st.dataframe(results_df, use_container_width=True, hide_index=True)
+            # Добавляем фотографии товаров
+            results_with_photos_df = add_product_photos(results_df)
+            
+            # Отображаем таблицу с поддержкой HTML для фотографий
+            if '📷 Фото товара' in results_with_photos_df.columns:
+                st.markdown("**Таблица с фотографиями товаров:**")
+                st.write(results_with_photos_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+                
+                # Дополнительно показываем обычную таблицу для удобства копирования данных
+                with st.expander("📋 Показать данные в табличном виде (для копирования)"):
+                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+            else:
+                # Если фото добавить не удалось, показываем обычную таблицу
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
         else:
             st.info("По вашему запросу ничего не найдено, или произошла ошибка при получении данных.")
 
