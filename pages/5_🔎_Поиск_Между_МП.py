@@ -186,6 +186,7 @@ if st.button("🚀 Найти совпадающие товары", type="primar
                 
                 return df
             
+            
             # Reorder columns to have "Search_Value" first, then others as selected by user
             # The find_cross_marketplace_matches function already aliases the search criterion column to "Search_Value"
             # and other columns to their UI labels.

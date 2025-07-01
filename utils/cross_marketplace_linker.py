@@ -781,6 +781,7 @@ class CrossMarketplaceLinker:
                 # Это гарантирует, что каждый введенный код поставщика будет в результатах
                 linked_df = linked_df[linked_df['oz_vendor_code'].isin(search_values)]
             
+            
             for _, row in linked_df.iterrows():
                 result_row = {}
                 
@@ -791,7 +792,7 @@ class CrossMarketplaceLinker:
                 for field_label, field_detail in selected_fields_map.items():
                     if field_label == "Search_Value":
                         continue
-                        
+                    
                     if field_detail == "common_matched_barcode":
                         result_row[field_label] = row.get('common_barcode', row.get('barcode', ''))
                     elif field_detail == "is_primary_barcode":
@@ -822,7 +823,6 @@ class CrossMarketplaceLinker:
                             )
                     else:
                         result_row[field_label] = ''
-                
                 result_data.append(result_row)
             
             results_df = pd.DataFrame(result_data)
@@ -835,7 +835,7 @@ class CrossMarketplaceLinker:
                     # Удаляем только полные дубликаты строк
                     results_df = results_df.drop_duplicates()
                 else:
-                    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ для wb_sku: показываем только актуальные штрихкоды
+                    # ИСПРАВЛЕННАЯ ЛОГИКА для wb_sku: сохраняем все уникальные oz_vendor_code
                     if search_criterion == 'wb_sku':
                         # Найти название колонки актуального штрихкода из selected_fields_map
                         primary_barcode_column = None
@@ -844,9 +844,16 @@ class CrossMarketplaceLinker:
                                 primary_barcode_column = field_label
                                 break
                         
-                        if primary_barcode_column and primary_barcode_column in results_df.columns:
-                            # Группируем по Search_Value + oz_vendor_code и оставляем только записи с "Да"
-                            # Если нет записей с "Да", берем первую доступную
+                        # Найти название колонки oz_vendor_code
+                        oz_vendor_col = None
+                        for field_label, field_detail in selected_fields_map.items():
+                            if isinstance(field_detail, tuple) and field_detail == ("oz_products", "oz_vendor_code"):
+                                oz_vendor_col = field_label
+                                break
+                        
+                        if primary_barcode_column and primary_barcode_column in results_df.columns and oz_vendor_col and oz_vendor_col in results_df.columns:
+                            # ИСПРАВЛЕНИЕ: Показываем ВСЕ уникальные oz_vendor_code для каждого wb_sku
+                            # Но для каждой комбинации wb_sku + oz_vendor_code берем лучшую запись
                             
                             def select_best_record_per_group(group):
                                 """Выбирает лучшую запись в группе: приоритет "Да", иначе первую"""
@@ -856,24 +863,24 @@ class CrossMarketplaceLinker:
                                 else:
                                     return group.iloc[0:1]  # Если нет "Да", берем первую
                             
-                            # Применяем группировку по wb_sku + oz_vendor_code
-                            oz_vendor_col = None
-                            for field_label, field_detail in selected_fields_map.items():
-                                if isinstance(field_detail, tuple) and field_detail == ("oz_products", "oz_vendor_code"):
-                                    oz_vendor_col = field_label
-                                    break
+                            # Группируем по wb_sku + oz_vendor_code и выбираем лучшую запись для каждой комбинации
+                            # Это сохранит все уникальные oz_vendor_code для каждого wb_sku
+                            grouped_results = []
+                            for (search_value, oz_vendor_code), group in results_df.groupby(['Search_Value', oz_vendor_col]):
+                                best_record = select_best_record_per_group(group)
+                                grouped_results.append(best_record)
                             
-                            if oz_vendor_col and oz_vendor_col in results_df.columns:
-                                # Группируем и выбираем лучшую запись для каждой комбинации
-                                results_df = (results_df
-                                            .groupby(['Search_Value', oz_vendor_col], as_index=False)
-                                            .apply(select_best_record_per_group, include_groups=False)
-                                            .reset_index(drop=True))
+                            # Объединяем все лучшие записи
+                            if grouped_results:
+                                results_df = pd.concat(grouped_results, ignore_index=True)
                             else:
-                                # Fallback: просто удаляем дубликаты по Search_Value если нет oz_vendor_code
-                                results_df = (results_df
-                                            .sort_values(primary_barcode_column, ascending=False)  # "Да" перед "Нет"
-                                            .drop_duplicates(subset=['Search_Value'], keep='first'))
+                                results_df = pd.DataFrame()
+                        elif primary_barcode_column and primary_barcode_column in results_df.columns:
+                            # Если есть колонка актуального штрихкода, но нет oz_vendor_code
+                            # Сортируем по актуальности и удаляем дубликаты только по Search_Value
+                            results_df = (results_df
+                                        .sort_values(primary_barcode_column, ascending=False)  # "Да" перед "Нет"
+                                        .drop_duplicates(subset=['Search_Value'], keep='first'))
                         else:
                             # Если нет колонки актуального штрихкода, просто удаляем полные дубликаты
                             results_df = results_df.drop_duplicates()
