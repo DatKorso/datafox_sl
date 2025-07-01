@@ -59,7 +59,7 @@ search_values_input = st.text_area(
 st.markdown("---")
 st.subheader("Information to Display")
 
-st.info("💡 **Новинка**: Теперь доступны дополнительные поля из детальных характеристик товаров Ozon (таблица oz_category_products), включая объединение на карточке, название цвета и размер производителя.")
+st.info("💡 **Новинка**: Теперь доступны дополнительные поля из детальных характеристик товаров Ozon (таблица oz_category_products), включая объединение на карточке, название цвета и размер производителя.\n\n🎯 **Актуальный штрихкод**: Показывает 'Да' для первого штрихкода в списке WB (разделенных ';'), который дал совпадение с товаром Ozon. Если первый штрихкод не совпал, но совпал второй - он станет актуальным.")
 
 # Define all possible fields that can be displayed
 # Keys are user-friendly labels, values are (table_alias, column_name_in_db) or special identifiers
@@ -93,7 +93,8 @@ wb_fields_options = {
 
 # Common/Derived Fields
 common_fields_options = {
-    "Общий штрихкод (по которому найдено совпадение)": "common_matched_barcode" # Special identifier
+    "Общий штрихкод (по которому найдено совпадение)": "common_matched_barcode", # Special identifier
+    "Актуальный штрихкод": "is_primary_barcode" # NEW: Special identifier for primary barcode status
 }
 
 all_display_options = list(common_fields_options.keys()) + list(ozon_fields_options.keys()) + list(wb_fields_options.keys())
@@ -101,6 +102,7 @@ all_display_options = list(common_fields_options.keys()) + list(ozon_fields_opti
 # Default selections:
 default_selections = [
     "Общий штрихкод (по которому найдено совпадение)",
+    "Актуальный штрихкод",  # NEW: Add primary barcode status to default
     "Ozon: Артикул (oz_sku)",
     "Ozon: Код поставщика (oz_vendor_code)",
     "Ozon: Остаток (oz_fbo_stock)",

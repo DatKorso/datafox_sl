@@ -17,7 +17,8 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
                                      If None or empty, processes all WB products.
 
     Returns:
-        pd.DataFrame: DataFrame with columns ['wb_sku', 'individual_barcode_wb']
+        pd.DataFrame: DataFrame with columns ['wb_sku', 'individual_barcode_wb', 'barcode_position']
+                      barcode_position indicates the position of the barcode in the original wb_barcodes string (1-indexed)
                       Returns an empty DataFrame if no data or on error.
     """
     if not con:
@@ -51,12 +52,14 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
     WITH split_barcodes AS (
         SELECT 
             p.wb_sku,
+            p.wb_barcodes,
             UNNEST(string_split(p.wb_barcodes, ';')) AS individual_barcode_wb
         FROM wb_products p
         WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL{wb_sku_filter}
     )
     SELECT 
         wb_sku,
+        wb_barcodes,
         TRIM(individual_barcode_wb) AS individual_barcode_wb
     FROM split_barcodes
     WHERE NULLIF(TRIM(individual_barcode_wb), '') IS NOT NULL
@@ -67,6 +70,17 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
             result_df = con.execute(base_query, params).fetchdf()
         else:
             result_df = con.execute(base_query).fetchdf()
+        
+        # Добавляем позицию штрихкода на уровне Python для гарантированной корректности
+        if not result_df.empty:
+            result_df['barcode_position'] = result_df.apply(
+                lambda row: row['wb_barcodes'].split(';').index(row['individual_barcode_wb']) + 1 
+                if row['individual_barcode_wb'] in row['wb_barcodes'].split(';') else 1, 
+                axis=1
+            )
+            # Удаляем вспомогательную колонку
+            result_df = result_df.drop('wb_barcodes', axis=1)
+        
         return result_df
     except Exception as e:
         err_msg = f"Error normalizing WB barcodes: {e}"
@@ -83,7 +97,9 @@ def get_ozon_barcodes_and_identifiers(
     """
     Retrieves Ozon product identifiers (sku, vendor_code, product_id) and their associated barcodes.
     Filters by the provided identifier lists if any are given.
-    (Formerly _get_ozon_barcodes_and_identifiers in db_utils.py)
+    
+    NEW: Adds oz_barcode_position to track the sequence of barcodes for each oz_vendor_code.
+    The last barcode (highest position) is considered the most current/actual.
 
     Args:
         con: Active DuckDB connection.
@@ -93,7 +109,8 @@ def get_ozon_barcodes_and_identifiers(
 
     Returns:
         pd.DataFrame: DataFrame with columns 
-                      ['oz_barcode', 'oz_sku', 'oz_vendor_code', 'oz_product_id'].
+                      ['oz_barcode', 'oz_sku', 'oz_vendor_code', 'oz_product_id', 'oz_barcode_position'].
+                      oz_barcode_position indicates the sequence number of the barcode for each vendor_code.
                       Returns an empty DataFrame if no relevant data or on error.
     """
     if not con:
@@ -101,26 +118,28 @@ def get_ozon_barcodes_and_identifiers(
         else: print("Error: DB connection not available for fetching Ozon barcodes.")
         return pd.DataFrame()
 
+    # Updated query to include barcode position for each vendor_code
     base_query = """ 
     SELECT DISTINCT
         b.oz_barcode,
         p.oz_sku, 
         p.oz_vendor_code AS product_oz_vendor_code, 
-        p.oz_product_id AS product_oz_product_id
+        p.oz_product_id AS product_oz_product_id,
+        ROW_NUMBER() OVER (PARTITION BY p.oz_vendor_code ORDER BY b.oz_barcode) AS oz_barcode_position
     FROM oz_barcodes b
     LEFT JOIN oz_products p ON b.oz_product_id = p.oz_product_id
-    """ # Note: product_id from oz_barcodes is b.oz_product_id, vendor_code is b.oz_vendor_code
-        # These can be selected too if needed for more detailed trace, but current goal is product identifiers.
+    WHERE p.oz_vendor_code IS NOT NULL
+    """
 
     params = []
-    where_clauses = []
+    additional_where_clauses = []
 
     # UI implies one criterion type at a time. This logic handles if one is passed.
     if oz_skus:
         try:
             skus_for_query = [s for s in oz_skus if str(s).strip().isdigit()]  # Keep as strings, remove int() casting
             if not skus_for_query: raise ValueError("Empty or invalid SKU list after conversion")
-            where_clauses.append(f"p.oz_sku IN ({', '.join(['?'] * len(skus_for_query))})")
+            additional_where_clauses.append(f"p.oz_sku IN ({', '.join(['?'] * len(skus_for_query))})")
             params.extend(skus_for_query)
         except ValueError as e:
             msg = f"Ozon SKUs must be numeric. Cannot fetch Ozon barcodes. Details: {e}"
@@ -130,7 +149,7 @@ def get_ozon_barcodes_and_identifiers(
     elif oz_vendor_codes:
         vendor_codes_for_query = [str(vc) for vc in oz_vendor_codes if str(vc).strip()]
         if vendor_codes_for_query:
-            where_clauses.append(f"p.oz_vendor_code IN ({', '.join(['?'] * len(vendor_codes_for_query))})")
+            additional_where_clauses.append(f"p.oz_vendor_code IN ({', '.join(['?'] * len(vendor_codes_for_query))})")
             params.extend(vendor_codes_for_query)
         else:
             msg = "Provided Ozon Vendor Codes were invalid or empty. Returning no Ozon barcodes."
@@ -141,7 +160,7 @@ def get_ozon_barcodes_and_identifiers(
         try:
             product_ids_for_query = [int(pid) for pid in oz_product_ids if str(pid).strip().isdigit()]
             if not product_ids_for_query: raise ValueError("Empty or invalid Product ID list after conversion")
-            where_clauses.append(f"p.oz_product_id IN ({ ', '.join(['?'] * len(product_ids_for_query))})")
+            additional_where_clauses.append(f"p.oz_product_id IN ({ ', '.join(['?'] * len(product_ids_for_query))})")
             params.extend(product_ids_for_query)
         except ValueError as e:
             msg = f"Ozon Product IDs must be numeric. Cannot fetch Ozon barcodes. Details: {e}"
@@ -149,9 +168,9 @@ def get_ozon_barcodes_and_identifiers(
             else: print(f"Error: {msg}")
             return pd.DataFrame()
     
-    # If specific filters are applied, add the WHERE clause
-    if where_clauses:
-        base_query += " WHERE " + " AND ".join(where_clauses) # Should only be one main clause due to elif structure
+    # Add additional WHERE clauses if specific filters are applied
+    if additional_where_clauses:
+        base_query += " AND " + " AND ".join(additional_where_clauses)
     elif oz_skus is not None or oz_vendor_codes is not None or oz_product_ids is not None:
         # This means a list was provided for filtering, but it was empty or invalid after validation
         # Appropriate messages are already shown by the validation blocks. We should return empty.
@@ -167,6 +186,7 @@ def get_ozon_barcodes_and_identifiers(
             output_df['oz_sku'] = result_df['oz_sku'] 
             output_df['oz_vendor_code'] = result_df['product_oz_vendor_code'] 
             output_df['oz_product_id'] = result_df['product_oz_product_id']
+            output_df['oz_barcode_position'] = result_df['oz_barcode_position']
             return output_df.drop_duplicates()
         return pd.DataFrame() # Return empty if result_df was empty
 

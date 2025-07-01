@@ -45,10 +45,10 @@ class CrossMarketplaceLinker:
             oz_vendor_codes: Список Ozon vendor codes для фильтрации
             
         Returns:
-            DataFrame с колонками: wb_sku, oz_sku, oz_vendor_code, oz_product_id, barcode
+            DataFrame с колонками: wb_sku, oz_sku, oz_vendor_code, oz_product_id, barcode, barcode_position, is_primary_barcode
         """
         try:
-            # Получаем нормализованные штрихкоды WB
+            # Получаем нормализованные штрихкоды WB с позициями
             wb_barcodes_df = get_normalized_wb_barcodes(self.connection, wb_skus=wb_skus)
             if wb_barcodes_df.empty:
                 return pd.DataFrame()
@@ -89,12 +89,79 @@ class CrossMarketplaceLinker:
                 ].drop_duplicates()  # Только полные дубликаты
             else:
                 # Обычная агрессивная очистка для остальных случаев
-                wb_barcodes_df, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
-                    wb_barcodes_df, oz_barcodes_df
+                # Но сохраняем информацию о позиции
+                barcode_position_backup = wb_barcodes_df[['wb_sku', 'barcode', 'barcode_position']].copy()
+                wb_barcodes_df_clean, oz_barcodes_df = DataCleaningUtils.clean_marketplace_data(
+                    wb_barcodes_df.drop('barcode_position', axis=1), oz_barcodes_df
+                )
+                # Восстанавливаем информацию о позиции
+                wb_barcodes_df = wb_barcodes_df_clean.merge(
+                    barcode_position_backup, 
+                    on=['wb_sku', 'barcode'], 
+                    how='left'
                 )
             
             # Объединяем по общим штрихкодам
             linked_df = pd.merge(wb_barcodes_df, oz_barcodes_df, on='barcode', how='inner')
+            
+            # ИСПРАВЛЕННАЯ ЛОГИКА: Определяем актуальный штрихкод среди СОВПАДАЮЩИХ
+            if not linked_df.empty:
+                # Шаг 1: Для каждого oz_vendor_code среди СОВПАДАЮЩИХ штрихкодов находим максимальную позицию
+                if 'oz_barcode_position' in linked_df.columns:
+                    # Находим максимальную позицию среди совпадающих штрихкодов для каждого oz_vendor_code
+                    max_matching_oz_positions = linked_df.groupby('oz_vendor_code')['oz_barcode_position'].max().reset_index()
+                    max_matching_oz_positions.columns = ['oz_vendor_code', 'max_matching_oz_position']
+                    
+                    # Добавляем информацию о максимальной позиции среди совпадающих
+                    linked_df = linked_df.merge(max_matching_oz_positions, on='oz_vendor_code', how='left')
+                    
+                    # Шаг 2: Помечаем штрихкоды с максимальной позицией среди совпадающих как актуальные для Ozon
+                    linked_df['is_actual_oz_barcode'] = (
+                        linked_df['oz_barcode_position'] == linked_df['max_matching_oz_position']
+                    )
+                else:
+                    # Если нет информации о позиции Ozon, считаем все совпадающие штрихкоды актуальными
+                    linked_df['is_actual_oz_barcode'] = True
+                
+                # Шаг 3: Определяем актуальность для каждой связи wb_sku-oz_vendor_code
+                if 'barcode_position' in linked_df.columns:
+                    # Для каждой комбинации wb_sku + oz_vendor_code определяем актуальность
+                    wb_oz_combinations = linked_df[['wb_sku', 'oz_vendor_code']].drop_duplicates()
+                    
+                    linked_df['is_primary_barcode'] = False  # Инициализация
+                    
+                    for _, combo in wb_oz_combinations.iterrows():
+                        wb_sku = combo['wb_sku']
+                        oz_vendor_code = combo['oz_vendor_code']
+                        
+                        # Фильтруем связи для этой комбинации
+                        combo_links = linked_df[
+                            (linked_df['wb_sku'] == wb_sku) & 
+                            (linked_df['oz_vendor_code'] == oz_vendor_code)
+                        ].copy()
+                        
+                        # Проверяем, есть ли среди связей актуальный штрихкод Ozon
+                        has_actual_oz = combo_links['is_actual_oz_barcode'].any()
+                        
+                        if has_actual_oz:
+                            # Если есть актуальный штрихкод Ozon, находим первый в WB среди актуальных
+                            actual_oz_links = combo_links[combo_links['is_actual_oz_barcode']]
+                            min_wb_position = actual_oz_links['barcode_position'].min()
+                            
+                            # Помечаем как актуальные только связи с актуальным штрихкодом Ozon и минимальной позицией WB
+                            mask = (
+                                (linked_df['wb_sku'] == wb_sku) & 
+                                (linked_df['oz_vendor_code'] == oz_vendor_code) &
+                                (linked_df['is_actual_oz_barcode']) &
+                                (linked_df['barcode_position'] == min_wb_position)
+                            )
+                            linked_df.loc[mask, 'is_primary_barcode'] = True
+                else:
+                    # Если нет информации о позиции WB, учитываем только актуальность Ozon
+                    linked_df['is_primary_barcode'] = linked_df['is_actual_oz_barcode']
+            else:
+                # Если нет совпадений, возвращаем пустой DataFrame
+                linked_df['is_primary_barcode'] = False
             
             return linked_df
             
@@ -670,9 +737,35 @@ class CrossMarketplaceLinker:
             if search_criterion == 'wb_sku':
                 linked_df = self.get_bidirectional_links(wb_skus=search_values)
                 search_column = 'wb_sku'
+                # Для WB SKU поиска добавляем информацию об актуальном штрихкоде
+                enhanced_df = self._normalize_and_merge_barcodes(wb_skus=search_values)
+                if not enhanced_df.empty:
+                    # Объединяем с результатом для добавления информации об актуальном штрихкоде
+                    linked_df = linked_df.merge(
+                        enhanced_df[['wb_sku', 'oz_vendor_code', 'barcode', 'is_primary_barcode']],
+                        on=['wb_sku', 'oz_vendor_code'],
+                        how='left',
+                        suffixes=('', '_enhanced')
+                    )
+                    # Переименовываем колонку barcode для единообразия
+                    if 'barcode_enhanced' in linked_df.columns:
+                        linked_df['common_barcode'] = linked_df['barcode_enhanced']
+                        linked_df = linked_df.drop('barcode_enhanced', axis=1)
             elif search_criterion == 'oz_sku':
                 linked_df = self.get_bidirectional_links(oz_skus=search_values)
                 search_column = 'oz_sku'
+                # Для Ozon SKU поиска также добавляем информацию об актуальном штрихкоде
+                enhanced_df = self._normalize_and_merge_barcodes(oz_skus=search_values)
+                if not enhanced_df.empty:
+                    linked_df = linked_df.merge(
+                        enhanced_df[['wb_sku', 'oz_sku', 'barcode', 'is_primary_barcode']],
+                        on=['wb_sku', 'oz_sku'],
+                        how='left',
+                        suffixes=('', '_enhanced')
+                    )
+                    if 'barcode_enhanced' in linked_df.columns:
+                        linked_df['common_barcode'] = linked_df['barcode_enhanced']
+                        linked_df = linked_df.drop('barcode_enhanced', axis=1)
             elif search_criterion == 'oz_vendor_code':
                 linked_df = self._normalize_and_merge_barcodes(oz_vendor_codes=search_values)
                 # Переименовываем колонку для единообразия с другими методами
@@ -711,6 +804,10 @@ class CrossMarketplaceLinker:
                         
                     if field_detail == "common_matched_barcode":
                         result_row[field_label] = row.get('common_barcode', row.get('barcode', ''))
+                    elif field_detail == "is_primary_barcode":
+                        # Новое поле для отображения актуального штрихкода
+                        is_primary = row.get('is_primary_barcode', False)
+                        result_row[field_label] = "Да" if is_primary else "Нет"
                     elif isinstance(field_detail, tuple):
                         table_alias, column_name = field_detail
                         
@@ -763,52 +860,110 @@ class CrossMarketplaceLinker:
             clean_barcodes = [str(barcode).strip() for barcode in barcodes if str(barcode).strip()]
             if not clean_barcodes:
                 return pd.DataFrame()
-            
+
             result_data = []
-            
+
             for barcode in clean_barcodes:
                 # Ищем по штрихкоду в обеих системах
                 wb_query = f"""
                 WITH split_barcodes AS (
                     SELECT 
                         p.wb_sku,
+                        p.wb_barcodes,
                         UNNEST(string_split(p.wb_barcodes, ';')) AS individual_barcode
                     FROM wb_products p
                 )
-                SELECT wb_sku, TRIM(individual_barcode) as barcode
+                SELECT wb_sku, wb_barcodes, TRIM(individual_barcode) as barcode
                 FROM split_barcodes
                 WHERE TRIM(individual_barcode) = ?
                 """
-                
+
+                # ОБНОВЛЕНО: Используем новую функцию для получения позиций штрихкодов Ozon
                 oz_query = """
                 SELECT DISTINCT
                     b.oz_barcode,
                     p.oz_sku, 
                     p.oz_vendor_code, 
-                    p.oz_product_id
+                    p.oz_product_id,
+                    ROW_NUMBER() OVER (PARTITION BY p.oz_vendor_code ORDER BY b.oz_barcode) AS oz_barcode_position
                 FROM oz_barcodes b
                 LEFT JOIN oz_products p ON b.oz_product_id = p.oz_product_id
-                WHERE TRIM(b.oz_barcode) = ?
+                WHERE TRIM(b.oz_barcode) = ? AND p.oz_vendor_code IS NOT NULL
                 """
-                
+
                 wb_matches = self.connection.execute(wb_query, [barcode]).fetchdf()
                 oz_matches = self.connection.execute(oz_query, [barcode]).fetchdf()
-                
+
+                # Добавляем позицию штрихкода WB на уровне Python
+                if not wb_matches.empty:
+                    wb_matches['barcode_position'] = wb_matches.apply(
+                        lambda row: row['wb_barcodes'].split(';').index(row['barcode']) + 1 
+                        if row['barcode'] in row['wb_barcodes'].split(';') else 1, 
+                        axis=1
+                    )
+                    wb_matches = wb_matches.drop('wb_barcodes', axis=1)
+
+                # ИСПРАВЛЕННАЯ ЛОГИКА: Определяем актуальный штрихкод среди СОВПАДАЮЩИХ
+                if not oz_matches.empty:
+                    # Для поиска по штрихкоду: проверяем является ли найденный штрихкод актуальным для Ozon
+                    # Получаем максимальную позицию штрихкода для каждого oz_vendor_code среди всех его штрихкодов
+                    all_oz_positions_query = """
+                    SELECT 
+                        p.oz_vendor_code,
+                        MAX(ROW_NUMBER() OVER (PARTITION BY p.oz_vendor_code ORDER BY b.oz_barcode)) AS max_position
+                    FROM oz_barcodes b
+                    LEFT JOIN oz_products p ON b.oz_product_id = p.oz_product_id
+                    WHERE p.oz_vendor_code IN ({})
+                    GROUP BY p.oz_vendor_code
+                    """.format(','.join(['?' for _ in oz_matches['oz_vendor_code'].unique()]))
+                    
+                    max_positions_all = self.connection.execute(all_oz_positions_query, 
+                                                              list(oz_matches['oz_vendor_code'].unique())).fetchdf()
+                    
+                    if not max_positions_all.empty:
+                        # Добавляем информацию о максимальной позиции среди всех штрихкодов
+                        oz_matches = oz_matches.merge(max_positions_all, on='oz_vendor_code', how='left')
+                        
+                        # Помечаем как актуальные только те штрихкоды, которые имеют максимальную позицию
+                        oz_matches['is_actual_oz_barcode'] = (
+                            oz_matches['oz_barcode_position'] == oz_matches['max_position']
+                        )
+                    else:
+                        oz_matches['is_actual_oz_barcode'] = True  # fallback
+
                 # Формируем результат для данного штрихкода
                 if not wb_matches.empty and not oz_matches.empty:
+                    # Определяем актуальность для каждого WB товара
+                    wb_matches['is_primary_barcode'] = False  # Инициализация
+                    
+                    for _, oz_row in oz_matches.iterrows():
+                        oz_vendor_code = oz_row['oz_vendor_code']
+                        is_actual_oz = oz_row.get('is_actual_oz_barcode', True)
+                        
+                        # Если штрихкод актуальный для Ozon, помечаем все связанные WB товары как актуальные
+                        if is_actual_oz:
+                            wb_matches['is_primary_barcode'] = True
+
+                    # Формируем результат для каждой комбинации WB-Ozon
                     for _, wb_row in wb_matches.iterrows():
                         for _, oz_row in oz_matches.iterrows():
                             result_row = {"Search_Value": barcode}
-                            
+
                             for field_label, field_detail in selected_fields_map.items():
                                 if field_label == "Search_Value":
                                     continue
-                                    
+
                                 if field_detail == "common_matched_barcode":
                                     result_row[field_label] = barcode
+                                elif field_detail == "is_primary_barcode":
+                                    # Актуальный штрихкод: если штрихкод актуальный для Ozon
+                                    is_primary_wb = wb_row.get('is_primary_barcode', False)
+                                    is_actual_oz = oz_row.get('is_actual_oz_barcode', True)
+                                    is_primary = is_primary_wb and is_actual_oz
+                                    result_row[field_label] = "Да" if is_primary else "Нет"
                                 elif isinstance(field_detail, tuple):
                                     table_alias, column_name = field_detail
-                                    
+
                                     if table_alias == 'wb_products' and column_name == 'wb_sku':
                                         result_row[field_label] = wb_row['wb_sku']
                                     elif table_alias == 'oz_products':
@@ -827,11 +982,11 @@ class CrossMarketplaceLinker:
                                         result_row[field_label] = ''
                                 else:
                                     result_row[field_label] = ''
-                            
+
                             result_data.append(result_row)
-            
+
             return pd.DataFrame(result_data)
-            
+
         except Exception as e:
             st.error(f"Ошибка поиска по штрихкоду: {e}")
             return pd.DataFrame()

@@ -66,7 +66,7 @@ except Exception as e:
 st.success(f"Соединение с базой данных '{db_path}' установлено.")
 
 # Create tabs for different functionality
-tab1, tab2 = st.tabs(["🚨 Анализ ошибок карточек", "🔍 Сравнение расхождений цветов"])
+tab1, tab2 = st.tabs(["🚨 Анализ ошибок карточек", "🔍 Анализ расхождений параметров"])
 
 # Tab 1: Card errors analysis
 with tab1:
@@ -378,42 +378,48 @@ with tab1:
         - Отсутствующие данные: Заполните обязательные поля
         """)
 
-# Tab 2: Color discrepancy analysis
+# Tab 2: Field discrepancy analysis  
 with tab2:
-    st.header("🔍 Инструмент сравнения расхождений названий цветов")
+    st.header("🔍 Универсальный инструмент сравнения расхождений параметров товаров")
     st.info("""
-    **Цель инструмента:** Найти товары в рамках одного WB SKU, у которых отличаются названия цветов в поле `color_name`.
+    **Цель инструмента:** Найти товары в рамках одного WB SKU, у которых отличаются значения выбранных параметров из таблицы `oz_category_products`.
     Это поможет выявить inconsistent данные и исправить их для улучшения качества карточек.
     
-    **Дополнительно:** В разделе стандартизации цветов можно обработать как товары с расхождениями, так и все товары с связанными WB SKU.
+    **Возможности:**
+    - Анализ расхождений по любым полям: цвета, размеры, материалы, бренды и т.д.
+    - Массовая стандартизация найденных расхождений
+    - Экспорт результатов для корректировки данных
     """)
     
-    # Initialize session state for color analysis results
-    if 'color_analysis_completed' not in st.session_state:
-        st.session_state.color_analysis_completed = False
-    if 'color_analysis_statistics' not in st.session_state:
-        st.session_state.color_analysis_statistics = {}
-    if 'color_analysis_discrepancies_df' not in st.session_state:
-        st.session_state.color_analysis_discrepancies_df = pd.DataFrame()
-    if 'color_analysis_details_df' not in st.session_state:
-        st.session_state.color_analysis_details_df = pd.DataFrame()
+    # Initialize session state for field analysis results
+    if 'field_analysis_completed' not in st.session_state:
+        st.session_state.field_analysis_completed = False
+    if 'field_analysis_statistics' not in st.session_state:
+        st.session_state.field_analysis_statistics = {}
+    if 'field_analysis_discrepancies_df' not in st.session_state:
+        st.session_state.field_analysis_discrepancies_df = pd.DataFrame()
+    if 'field_analysis_details_df' not in st.session_state:
+        st.session_state.field_analysis_details_df = pd.DataFrame()
+    if 'selected_fields_for_analysis' not in st.session_state:
+        st.session_state.selected_fields_for_analysis = ['color_name']
 
-    # Color discrepancy analysis functions
+    # Universal field discrepancy analysis functions
     @st.cache_data
-    def find_color_discrepancies_for_wb_skus(_db_connection, wb_skus_list):
+    def find_field_discrepancies_for_wb_skus(_db_connection, wb_skus_list, selected_fields):
         """
-        Анализирует расхождения в названиях цветов для товаров, связанных с указанными WB SKU.
+        Анализирует расхождения в выбранных полях для товаров, связанных с указанными WB SKU.
         
         Args:
             _db_connection: Соединение с базой данных
             wb_skus_list: Список WB SKU для анализа
+            selected_fields: Список полей для анализа расхождений
             
         Returns:
             Tuple: (статистика, DataFrame с расхождениями, DataFrame с деталями)
         """
         from utils.cross_marketplace_linker import CrossMarketplaceLinker
         
-        if not wb_skus_list:
+        if not wb_skus_list or not selected_fields:
             return {}, pd.DataFrame(), pd.DataFrame()
         
         try:
@@ -434,34 +440,40 @@ with tab2:
                 st.warning("Не найдено Ozon vendor codes для указанных WB SKU")
                 return {}, pd.DataFrame(), pd.DataFrame()
             
-            # Запрос для получения данных о цветах из oz_category_products
-            color_query = f"""
+            # Формируем динамический запрос на основе выбранных полей
+            fields_to_select = ['oz_vendor_code', 'product_name', 'oz_brand', 'oz_actual_price'] + selected_fields
+            fields_str = ', '.join([f'ocp.{field}' for field in fields_to_select])
+            
+            # Создаем условия для фильтрации null значений по всем выбранным полям
+            field_conditions = []
+            for field in selected_fields:
+                field_conditions.append(f"""
+                    (ocp.{field} IS NOT NULL 
+                     AND TRIM(CAST(ocp.{field} AS VARCHAR)) != ''
+                     AND TRIM(CAST(ocp.{field} AS VARCHAR)) != 'NULL')
+                """)
+            
+            fields_condition = ' OR '.join(field_conditions)
+            
+            fields_query = f"""
             SELECT DISTINCT
-                ocp.oz_vendor_code,
-                ocp.color_name,
-                ocp.product_name,
-                ocp.oz_brand,
-                ocp.color,
-                ocp.russian_size,
-                ocp.oz_actual_price
+                {fields_str}
             FROM oz_category_products ocp
             WHERE ocp.oz_vendor_code IN ({', '.join(['?'] * len(oz_vendor_codes))})
-                AND ocp.color_name IS NOT NULL 
-                AND TRIM(ocp.color_name) != ''
-                AND TRIM(ocp.color_name) != 'NULL'
+                AND ({fields_condition})
             ORDER BY ocp.oz_vendor_code
             """
             
-            color_df = _db_connection.execute(color_query, oz_vendor_codes).fetchdf()
+            fields_df = _db_connection.execute(fields_query, oz_vendor_codes).fetchdf()
             
-            if color_df.empty:
-                st.warning("Не найдено данных о цветах для связанных товаров Ozon")
+            if fields_df.empty:
+                st.warning(f"Не найдено данных по выбранным полям для связанных товаров Ozon")
                 return {}, pd.DataFrame(), pd.DataFrame()
             
-            # Объединяем данные о связях с данными о цветах
+            # Объединяем данные о связях с данными о полях
             merged_df = pd.merge(
                 linked_df[['wb_sku', 'oz_vendor_code']], 
-                color_df, 
+                fields_df, 
                 on='oz_vendor_code', 
                 how='inner'
             )
@@ -469,54 +481,65 @@ with tab2:
             if merged_df.empty:
                 return {}, pd.DataFrame(), pd.DataFrame()
             
-            # Анализируем расхождения по wb_sku
+            # Анализируем расхождения по wb_sku для каждого выбранного поля
             discrepancies = []
             all_details = []
+            field_discrepancy_summary = {}
             
             for wb_sku in merged_df['wb_sku'].unique():
                 wb_sku_data = merged_df[merged_df['wb_sku'] == wb_sku]
                 
-                # Получаем уникальные color_name для этого wb_sku
-                unique_colors = wb_sku_data['color_name'].dropna().unique()
-                unique_colors = [c for c in unique_colors if str(c).strip() and str(c).strip().upper() != 'NULL']
+                # Анализируем каждое поле на предмет расхождений
+                has_any_discrepancy = False
+                field_discrepancies = {}
                 
-                if len(unique_colors) > 1:
-                    # Есть расхождения
+                for field in selected_fields:
+                    if field in wb_sku_data.columns:
+                        # Получаем уникальные значения для этого поля
+                        unique_values = wb_sku_data[field].dropna().unique()
+                        unique_values = [str(v).strip() for v in unique_values 
+                                       if str(v).strip() and str(v).strip().upper() != 'NULL']
+                        
+                        if len(unique_values) > 1:
+                            has_any_discrepancy = True
+                            field_discrepancies[field] = unique_values
+                            
+                            # Подсчитываем статистику по полям
+                            if field not in field_discrepancy_summary:
+                                field_discrepancy_summary[field] = 0
+                            field_discrepancy_summary[field] += 1
+                
+                if has_any_discrepancy:
+                    # Есть расхождения в одном или нескольких полях
+                    discrepancy_details = []
+                    for field, values in field_discrepancies.items():
+                        discrepancy_details.append(f"{field}: {'; '.join(values)}")
+                    
                     discrepancies.append({
                         'wb_sku': wb_sku,
-                        'discrepancy_count': len(unique_colors),
-                        'color_names': '; '.join(unique_colors),
+                        'fields_with_discrepancies': list(field_discrepancies.keys()),
+                        'discrepancy_details': ' | '.join(discrepancy_details),
                         'oz_products_count': len(wb_sku_data),
                         'unique_oz_vendor_codes': len(wb_sku_data['oz_vendor_code'].unique())
                     })
+                
+                # Добавляем детали для всех товаров этого wb_sku
+                for _, row in wb_sku_data.iterrows():
+                    detail_row = {
+                        'wb_sku': row['wb_sku'],
+                        'oz_vendor_code': row['oz_vendor_code'],
+                        'product_name': row['product_name'],
+                        'oz_brand': row['oz_brand'],
+                        'oz_actual_price': row['oz_actual_price'],
+                        'has_discrepancy': 'Да' if has_any_discrepancy else 'Нет'
+                    }
                     
-                    # Добавляем детали для этого wb_sku
-                    for _, row in wb_sku_data.iterrows():
-                        all_details.append({
-                            'wb_sku': row['wb_sku'],
-                            'oz_vendor_code': row['oz_vendor_code'],
-                            'product_name': row['product_name'],
-                            'color_name': row['color_name'],
-                            'color': row['color'],
-                            'oz_brand': row['oz_brand'],
-                            'russian_size': row['russian_size'],
-                            'oz_actual_price': row['oz_actual_price'],
-                            'has_discrepancy': 'Да'
-                        })
-                else:
-                    # Нет расхождений, добавляем в статистику
-                    for _, row in wb_sku_data.iterrows():
-                        all_details.append({
-                            'wb_sku': row['wb_sku'],
-                            'oz_vendor_code': row['oz_vendor_code'],
-                            'product_name': row['product_name'],
-                            'color_name': row['color_name'],
-                            'color': row['color'],
-                            'oz_brand': row['oz_brand'],
-                            'russian_size': row['russian_size'],
-                            'oz_actual_price': row['oz_actual_price'],
-                            'has_discrepancy': 'Нет'
-                        })
+                    # Добавляем значения выбранных полей
+                    for field in selected_fields:
+                        if field in row.index:
+                            detail_row[field] = row[field]
+                    
+                    all_details.append(detail_row)
             
             # Создаем DataFrame с расхождениями
             discrepancies_df = pd.DataFrame(discrepancies)
@@ -533,15 +556,124 @@ with tab2:
                 'analyzed_wb_skus': analyzed_wb_skus,
                 'wb_skus_with_discrepancies': wb_skus_with_discrepancies,
                 'wb_skus_without_discrepancies': wb_skus_without_discrepancies,
-                'discrepancy_percentage': (wb_skus_with_discrepancies / analyzed_wb_skus * 100) if analyzed_wb_skus > 0 else 0
+                'discrepancy_percentage': (wb_skus_with_discrepancies / analyzed_wb_skus * 100) if analyzed_wb_skus > 0 else 0,
+                'selected_fields': selected_fields,
+                'field_discrepancy_summary': field_discrepancy_summary,
+                'total_products_analyzed': len(details_df)
             }
             
             return statistics, discrepancies_df, details_df
             
         except Exception as e:
-            st.error(f"Ошибка при анализе расхождений цветов: {e}")
+            st.error(f"Ошибка при анализе расхождений полей: {e}")
             return {}, pd.DataFrame(), pd.DataFrame()
 
+    # Field selection section
+    st.subheader("🎯 Выбор полей для анализа расхождений")
+    
+    # Define field categories for better organization
+    field_categories = {
+        "🎨 Характеристики товара": [
+            'color_name', 'color', 'russian_size', 'manufacturer_size', 
+            'type', 'gender', 'season', 'merge_on_card', 'is_18plus'
+        ],
+        "🧵 Материалы": [
+            'material', 'upper_material', 'lining_material', 
+            'insole_material', 'outsole_material'
+        ],
+        "🏷️ Брендинг и категории": [
+            'oz_brand', 'collection', 'style', 'group_name'
+        ],
+        "📏 Размеры и параметры": [
+            'fullness', 'heel_height_cm', 'sole_height_cm', 
+            'bootleg_height_cm', 'platform_height_cm', 'foot_length_cm',
+            'insole_length_cm', 'size_info'
+        ],
+        "⚡ Специальные характеристики": [
+            'orthopedic', 'waterproof', 'sport_purpose', 
+            'target_audience', 'temperature_mode', 'pronation_type',
+            'membrane_material_type'
+        ],
+        "🔧 Технические детали": [
+            'fastener_type', 'heel_type', 'model_features', 
+            'decorative_elements', 'fit', 'boots_model', 'shoes_model', 
+            'ballet_flats_model'
+        ],
+        "🌍 Географические данные": [
+            'country_of_origin', 'brand_country'
+        ],
+        "📸 Медиа и контент": [
+            'main_photo_url', 'additional_photos_urls', 'photo_360_urls', 
+            'photo_article', 'hashtags', 'annotation', 'rich_content_json', 
+            'keywords'
+        ],
+        "📦 Товарная информация": [
+            'product_name', 'oz_sku', 'barcode', 'oz_actual_price', 
+            'oz_price_before_discount', 'vat_percent', 'installment', 
+            'review_points'
+        ],
+        "📐 Упаковка и логистика": [
+            'package_weight_g', 'package_width_mm', 'package_height_mm', 
+            'package_length_mm', 'package_count', 'shoes_in_pack_count'
+        ],
+        "📋 Техническая документация": [
+            'size_table_json', 'warranty_period', 'tnved_codes', 
+            'error', 'warning'
+        ]
+    }
+    
+    # Create expandable sections for field selection
+    selected_fields = []
+    
+    # Quick selection presets
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.button("🎨 Только цвета", help="Выбрать поля связанные с цветами"):
+            st.session_state.selected_fields_for_analysis = ['color_name', 'color']
+    with col2:
+        if st.button("📏 Размеры", help="Выбрать поля связанные с размерами"):
+            st.session_state.selected_fields_for_analysis = ['russian_size', 'manufacturer_size', 'fullness']
+    with col3:
+        if st.button("🧵 Материалы", help="Выбрать поля связанные с материалами"):
+            st.session_state.selected_fields_for_analysis = ['material', 'upper_material', 'lining_material']
+    with col4:
+        if st.button("📸 Медиа", help="Выбрать поля связанные с фото и контентом"):
+            st.session_state.selected_fields_for_analysis = ['main_photo_url', 'additional_photos_urls', 'photo_360_urls']
+    
+    # Manual field selection
+    with st.expander("🔧 Ручной выбор полей", expanded=True):
+        for category_name, fields in field_categories.items():
+            st.write(f"**{category_name}**")
+            cols = st.columns(3)
+            for i, field in enumerate(fields):
+                with cols[i % 3]:
+                    if st.checkbox(
+                        field,
+                        value=field in st.session_state.selected_fields_for_analysis,
+                        key=f"field_checkbox_{field}"
+                    ):
+                        if field not in selected_fields:
+                            selected_fields.append(field)
+                    elif field in st.session_state.selected_fields_for_analysis:
+                        # Remove field if unchecked
+                        new_list = [f for f in st.session_state.selected_fields_for_analysis if f != field]
+                        st.session_state.selected_fields_for_analysis = new_list
+    
+    # Update selected fields
+    if selected_fields:
+        # Add newly selected fields
+        for field in selected_fields:
+            if field not in st.session_state.selected_fields_for_analysis:
+                st.session_state.selected_fields_for_analysis.append(field)
+    
+    # Display selected fields
+    if st.session_state.selected_fields_for_analysis:
+        st.success(f"Выбрано полей: {', '.join(st.session_state.selected_fields_for_analysis)}")
+    else:
+        st.warning("Выберите хотя бы одно поле для анализа")
+        
+    st.divider()
+    
     # Input section for WB SKUs
     st.subheader("📝 Ввод WB SKU для анализа")
 
@@ -549,11 +681,11 @@ with tab2:
 
     with col1:
         wb_skus_input = st.text_area(
-            "Введите WB SKU (по одному на строку или через запятую):",
+            "Введите WB SKU (по одному на строку или через запятой):",
             height=100,
             placeholder="Например:\n12345\n67890\nили: 12345, 67890, 54321",
-            help="Введите артикулы WB для поиска связанных товаров Ozon и анализа расхождений в названиях цветов",
-            key="color_wb_skus_input"
+            help="Введите артикулы WB для поиска связанных товаров Ozon и анализа расхождений в выбранных полях",
+            key="field_wb_skus_input"
         )
 
     with col2:
@@ -562,9 +694,11 @@ with tab2:
         st.write("или")
         st.code("12345, 67890, 54321")
 
-    if st.button("🔍 Анализировать расхождения", type="primary", key="color_analyze_button"):
+    if st.button("🔍 Анализировать расхождения", type="primary", key="field_analyze_button"):
         if not wb_skus_input.strip():
             st.warning("Пожалуйста, введите хотя бы один WB SKU")
+        elif not st.session_state.selected_fields_for_analysis:
+            st.warning("Пожалуйста, выберите хотя бы одно поле для анализа")
         else:
             # Парсим введенные WB SKU
             wb_skus_text = wb_skus_input.strip()
@@ -589,41 +723,42 @@ with tab2:
             else:
                 st.success(f"Найдено {len(wb_skus_list)} валидных WB SKU для анализа")
                 
-                with st.spinner("Анализируем расхождения в названиях цветов..."):
-                    statistics, discrepancies_df, details_df = find_color_discrepancies_for_wb_skus(
-                        db_connection, wb_skus_list
+                with st.spinner(f"Анализируем расхождения в полях: {', '.join(st.session_state.selected_fields_for_analysis)}..."):
+                    statistics, discrepancies_df, details_df = find_field_discrepancies_for_wb_skus(
+                        db_connection, wb_skus_list, st.session_state.selected_fields_for_analysis
                     )
                     
                     # Save results to session state
                     if statistics:
-                        st.session_state.color_analysis_completed = True
-                        st.session_state.color_analysis_statistics = statistics
-                        st.session_state.color_analysis_discrepancies_df = discrepancies_df
-                        st.session_state.color_analysis_details_df = details_df
+                        st.session_state.field_analysis_completed = True
+                        st.session_state.field_analysis_statistics = statistics
+                        st.session_state.field_analysis_discrepancies_df = discrepancies_df
+                        st.session_state.field_analysis_details_df = details_df
                     else:
-                        st.session_state.color_analysis_completed = False
+                        st.session_state.field_analysis_completed = False
     
     # Add button to clear analysis results if analysis was completed
-    if st.session_state.color_analysis_completed:
+    if st.session_state.field_analysis_completed:
         col1, col2 = st.columns([1, 4])
         with col1:
-            if st.button("🔄 Очистить результаты", key="clear_color_analysis"):
-                st.session_state.color_analysis_completed = False
-                st.session_state.color_analysis_statistics = {}
-                st.session_state.color_analysis_discrepancies_df = pd.DataFrame()
-                st.session_state.color_analysis_details_df = pd.DataFrame()
+            if st.button("🔄 Очистить результаты", key="clear_field_analysis"):
+                st.session_state.field_analysis_completed = False
+                st.session_state.field_analysis_statistics = {}
+                st.session_state.field_analysis_discrepancies_df = pd.DataFrame()
+                st.session_state.field_analysis_details_df = pd.DataFrame()
                 st.rerun()
     
     # Display results from session state
-    if st.session_state.color_analysis_completed and st.session_state.color_analysis_statistics:
+    if st.session_state.field_analysis_completed and st.session_state.field_analysis_statistics:
         # Отображаем статистику
         st.subheader("📊 Статистика анализа")
         
-        statistics = st.session_state.color_analysis_statistics
-        discrepancies_df = st.session_state.color_analysis_discrepancies_df
-        details_df = st.session_state.color_analysis_details_df
+        statistics = st.session_state.field_analysis_statistics
+        discrepancies_df = st.session_state.field_analysis_discrepancies_df
+        details_df = st.session_state.field_analysis_details_df
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Основные метрики
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Всего WB SKU", statistics['total_wb_skus_requested'])
         with col2:
@@ -632,29 +767,52 @@ with tab2:
             st.metric("С расхождениями", statistics['wb_skus_with_discrepancies'])
         with col4:
             st.metric("Без расхождений", statistics['wb_skus_without_discrepancies'])
+        with col5:
+            st.metric("Всего товаров", statistics['total_products_analyzed'])
         
-        # Процент расхождений
-        if statistics['analyzed_wb_skus'] > 0:
-            st.metric(
-                "Процент с расхождениями", 
-                f"{statistics['discrepancy_percentage']:.1f}%"
-            )
+        # Процент расхождений и дополнительная информация
+        col1, col2 = st.columns(2)
+        with col1:
+            if statistics['analyzed_wb_skus'] > 0:
+                st.metric(
+                    "Процент с расхождениями", 
+                    f"{statistics['discrepancy_percentage']:.1f}%"
+                )
+        with col2:
+            st.info(f"**Анализируемые поля:** {', '.join(statistics['selected_fields'])}")
+        
+        # Статистика по полям
+        if statistics['field_discrepancy_summary']:
+            st.subheader("📈 Распределение расхождений по полям")
+            field_stats_df = pd.DataFrame(
+                list(statistics['field_discrepancy_summary'].items()),
+                columns=['Поле', 'Количество WB SKU с расхождениями']
+            ).sort_values('Количество WB SKU с расхождениями', ascending=False)
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.dataframe(field_stats_df, use_container_width=True, hide_index=True)
+            with col2:
+                st.bar_chart(field_stats_df.set_index('Поле')['Количество WB SKU с расхождениями'])
         
         # Результаты анализа
         if not discrepancies_df.empty:
-            st.subheader("⚠️ WB SKU с расхождениями в названиях цветов")
+            st.subheader("⚠️ WB SKU с расхождениями в анализируемых полях")
+            
+            # Настройка колонок для отображения
+            column_config = {
+                'wb_sku': 'WB SKU',
+                'fields_with_discrepancies': 'Поля с расхождениями',
+                'discrepancy_details': st.column_config.TextColumn('Детали расхождений', width="large"),
+                'oz_products_count': st.column_config.NumberColumn('Всего товаров Ozon', format="%d"),
+                'unique_oz_vendor_codes': st.column_config.NumberColumn('Уникальных артикулов', format="%d")
+            }
             
             st.dataframe(
                 discrepancies_df,
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    'wb_sku': 'WB SKU',
-                    'discrepancy_count': st.column_config.NumberColumn('Количество разных цветов', format="%d"),
-                    'color_names': 'Названия цветов',
-                    'oz_products_count': st.column_config.NumberColumn('Всего товаров Ozon', format="%d"),
-                    'unique_oz_vendor_codes': st.column_config.NumberColumn('Уникальных артикулов', format="%d")
-                }
+                column_config=column_config
             )
             
             # Детальный просмотр расхождений
@@ -665,7 +823,7 @@ with tab2:
                 "Выберите WB SKU для детального просмотра:",
                 options=discrepancies_df['wb_sku'].tolist(),
                 help="Выберите WB SKU для просмотра всех связанных товаров Ozon",
-                key="color_selected_wb_sku"
+                key="field_selected_wb_sku"
             )
             
             if selected_wb_sku:
@@ -674,46 +832,68 @@ with tab2:
                 if not selected_details.empty:
                     st.write(f"**Товары Ozon для WB SKU {selected_wb_sku}:**")
                     
+                    # Динамически создаем конфигурацию колонок
+                    detail_column_config = {
+                        'wb_sku': 'WB SKU',
+                        'oz_vendor_code': 'Артикул Ozon',
+                        'product_name': 'Название товара',
+                        'oz_brand': 'Бренд',
+                        'oz_actual_price': st.column_config.NumberColumn('Цена, ₽', format="%.0f"),
+                        'has_discrepancy': 'Есть расхождения'
+                    }
+                    
+                    # Добавляем конфигурации для выбранных полей
+                    for field in statistics['selected_fields']:
+                        if field in selected_details.columns:
+                            detail_column_config[field] = field
+                    
                     st.dataframe(
                         selected_details,
                         use_container_width=True,
                         hide_index=True,
-                        column_config={
-                            'wb_sku': 'WB SKU',
-                            'oz_vendor_code': 'Артикул Ozon',
-                            'product_name': 'Название товара',
-                            'color_name': 'Название цвета',
-                            'color': 'Цвет',
-                            'oz_brand': 'Бренд',
-                            'russian_size': 'Размер',
-                            'oz_actual_price': st.column_config.NumberColumn('Цена, ₽', format="%.0f"),
-                            'has_discrepancy': 'Есть расхождения'
-                        }
+                        column_config=detail_column_config
                     )
                     
-                    # Показываем уникальные названия цветов для выбранного WB SKU
-                    unique_colors_for_sku = selected_details['color_name'].dropna().unique()
-                    st.info(f"**Уникальные названия цветов:** {', '.join(unique_colors_for_sku)}")
+                    # Показываем уникальные значения для каждого анализируемого поля
+                    st.write("**Уникальные значения по полям:**")
+                    for field in statistics['selected_fields']:
+                        if field in selected_details.columns:
+                            unique_values = selected_details[field].dropna().unique()
+                            unique_values = [str(v) for v in unique_values if str(v).strip() and str(v).strip().upper() != 'NULL']
+                            if unique_values:
+                                if len(unique_values) > 1:
+                                    st.warning(f"**{field}:** {', '.join(unique_values)} ⚠️ (расхождение)")
+                                else:
+                                    st.success(f"**{field}:** {', '.join(unique_values)} ✅ (единообразно)")
         else:
-            st.success("🎉 Отлично! Все проанализированные WB SKU имеют согласованные названия цветов.")
+            st.success("🎉 Отлично! Все проанализированные WB SKU имеют согласованные значения в выбранных полях.")
         
 
     # Additional information about the tool
     st.subheader("ℹ️ Информация об инструменте")
-    st.expander("Как работает анализ расхождений", expanded=False).write("""
+    st.expander("Как работает универсальный анализ расхождений", expanded=False).write("""
     **Алгоритм работы:**
     
-    1. **Поиск связей:** Для каждого введенного WB SKU ищутся связанные товары Ozon через общие штрихкоды
-    2. **Извлечение данных:** Из таблицы `oz_category_products` извлекаются данные о названиях цветов (`color_name`)
-    3. **Анализ расхождений:** Для каждого WB SKU проверяется, есть ли разные значения `color_name` среди связанных товаров
-    4. **Статистика:** Подсчитывается количество WB SKU с расхождениями и без них
-    5. **Детализация:** Предоставляется подробная информация о каждом найденном расхождении
+    1. **Выбор полей:** Пользователь выбирает поля из таблицы `oz_category_products` для анализа
+    2. **Поиск связей:** Для каждого введенного WB SKU ищутся связанные товары Ozon через общие штрихкоды
+    3. **Извлечение данных:** Из таблицы `oz_category_products` извлекаются данные по выбранным полям
+    4. **Анализ расхождений:** Для каждого WB SKU проверяется, есть ли разные значения в любом из выбранных полей
+    5. **Статистика:** Подсчитывается статистика по каждому полю и общая статистика расхождений
+    6. **Детализация:** Предоставляется подробная информация о каждом найденном расхождении
+    
+    **Типы полей для анализа:**
+    - **Характеристики товара:** цвета, размеры, типы, пол, сезон
+    - **Материалы:** основной материал, материал верха, подкладки, стельки, подошвы
+    - **Брендинг:** бренд, коллекция, стиль, группа товаров
+    - **Технические параметры:** застежки, каблуки, особенности модели
+    - **Географические данные:** страна производства, страна бренда
     
     **Польза анализа:**
-    - Выявление inconsistent данных в карточках товаров
-    - Улучшение качества данных для лучшей конверсии
-    - Стандартизация названий цветов в рамках одного товарного ряда
-    - Поиск потенциальных ошибок в заполнении карточек
+    - Выявление inconsistent данных в любых полях карточек товаров
+    - Улучшение качества данных для лучшей конверсии и SEO
+    - Стандартизация характеристик в рамках одного товарного ряда
+    - Поиск потенциальных ошибок в заполнении любых полей карточек
+    - Массовое исправление найденных расхождений
     """)
 
     # Массовая стандартизация названий цветов
@@ -951,8 +1131,8 @@ with tab2:
         )
     
     with col2:
-        can_use_discrepancies = (st.session_state.color_analysis_completed and 
-                                not st.session_state.color_analysis_discrepancies_df.empty)
+        can_use_discrepancies = (st.session_state.field_analysis_completed and 
+                                not st.session_state.field_analysis_discrepancies_df.empty)
         
         use_only_discrepancies = st.checkbox(
             "⚠️ Использовать только товары с расхождениями",
@@ -966,8 +1146,8 @@ with tab2:
     if use_all_products:
         st.info("📋 **Режим: Все товары** - будут обработаны все товары из oz_category_products, связанные с WB SKU")
     elif use_only_discrepancies and can_use_discrepancies:
-        discrepancies_df = st.session_state.color_analysis_discrepancies_df
-        st.info(f"📋 **Режим: Только расхождения** - будет обработано {len(discrepancies_df)} WB SKU с расхождениями в названиях цветов")
+        discrepancies_df = st.session_state.field_analysis_discrepancies_df
+        st.info(f"📋 **Режим: Только расхождения** - будет обработано {len(discrepancies_df)} WB SKU с расхождениями в выбранных полях")
     else:
         st.warning("⚠️ **Недоступно** - выберите режим обработки или выполните анализ расхождений")
     
@@ -992,8 +1172,8 @@ with tab2:
                     )
                 elif use_only_discrepancies:
                     # Режим только расхождений
-                    discrepancies_df = st.session_state.color_analysis_discrepancies_df
-                    details_df = st.session_state.color_analysis_details_df
+                    discrepancies_df = st.session_state.field_analysis_discrepancies_df
+                    details_df = st.session_state.field_analysis_details_df
                     standardization_results = generate_standardized_color_names(
                         db_connection, 
                         discrepancies_df=discrepancies_df, 
