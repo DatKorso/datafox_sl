@@ -70,22 +70,22 @@ st.info("💡 **Новинка**: Теперь доступны дополнит
 
 # OZON Fields
 ozon_fields_options = {
-    "Ozon: Артикул (oz_sku)": ("oz_products", "oz_sku"),
-    "Ozon: Код поставщика (oz_vendor_code)": ("oz_products", "oz_vendor_code"),
-    "Ozon: Product ID (oz_product_id)": ("oz_products", "oz_product_id"),
-    "Ozon: Бренд (oz_brand)": ("oz_products", "oz_brand"),
-    "Ozon: Статус (oz_product_status)": ("oz_products", "oz_product_status"),
-    "Ozon: Цена (oz_actual_price)": ("oz_products", "oz_actual_price"),
-    "Ozon: Остаток (oz_fbo_stock)": ("oz_products", "oz_fbo_stock"),
-    "Ozon: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode"), # From oz_barcodes table
-    "Ozon: Объединить на карточке (merge_on_card)": ("oz_category_products", "merge_on_card"), # From oz_category_products table
-    "Ozon: Название цвета (color_name)": ("oz_category_products", "color_name"), # From oz_category_products table
-    "Ozon: Размер производителя (manufacturer_size)": ("oz_category_products", "manufacturer_size") # From oz_category_products table
+    "Oz: SKU": ("oz_products", "oz_sku"),
+    "Oz: Артикул поставщика": ("oz_products", "oz_vendor_code"),
+    "Oz: Product ID (oz_product_id)": ("oz_products", "oz_product_id"),
+    "Oz: Бренд (oz_brand)": ("oz_products", "oz_brand"),
+    "Oz: Статус (oz_product_status)": ("oz_products", "oz_product_status"),
+    "Oz: Цена (oz_actual_price)": ("oz_products", "oz_actual_price"),
+    "Oz: Остаток (oz_fbo_stock)": ("oz_products", "oz_fbo_stock"),
+    "Oz: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode"), # From oz_barcodes table
+    "Oz: Объединить на карточке (merge_on_card)": ("oz_category_products", "merge_on_card"), # From oz_category_products table
+    "Oz: Название цвета (color_name)": ("oz_category_products", "color_name"), # From oz_category_products table
+    "Oz: Размер производителя (manufacturer_size)": ("oz_category_products", "manufacturer_size") # From oz_category_products table
 }
 
 # Wildberries Fields
 wb_fields_options = {
-    "WB: Артикул (wb_sku)": ("wb_products", "wb_sku"),
+    "WB: SKU": ("wb_products", "wb_sku"),
     "WB: Бренд (wb_brand)": ("wb_products", "wb_brand"),
     "WB: Категория (wb_category)": ("wb_products", "wb_category"),
     "WB: Штрихкоды (wb_barcodes)": ("wb_products", "wb_barcodes"), # Original string from wb_products
@@ -94,7 +94,7 @@ wb_fields_options = {
 
 # Common/Derived Fields
 common_fields_options = {
-    "Общий штрихкод (по которому найдено совпадение)": "common_matched_barcode", # Special identifier
+    "Общий ШК": "common_matched_barcode", # Special identifier
     "Актуальный штрихкод": "is_primary_barcode" # NEW: Special identifier for primary barcode status
 }
 
@@ -102,12 +102,12 @@ all_display_options = list(common_fields_options.keys()) + list(ozon_fields_opti
 
 # Default selections:
 default_selections = [
-    "Общий штрихкод (по которому найдено совпадение)",
+    "Общий ШК",
     "Актуальный штрихкод",  # NEW: Add primary barcode status to default
-    "Ozon: Артикул (oz_sku)",
-    "Ozon: Код поставщика (oz_vendor_code)",
-    "Ozon: Остаток (oz_fbo_stock)",
-    "WB: Артикул (wb_sku)",
+    "Oz: SKU",
+    "Oz: Артикул поставщика",
+    "Oz: Остаток",
+    "WB: SKU",
 ]
 
 
@@ -157,10 +157,15 @@ if st.button("🚀 Найти совпадающие товары", type="primar
             # Добавляем фотографии товаров WB в первый столбец
             def add_product_photos(df):
                 """Добавляет столбец с фотографиями товаров WB в начало таблицы."""
-                # Ищем столбец с WB SKU
+                # Ищем столбец с WB SKU - обновленная логика поиска
                 wb_sku_column = None
                 for col in df.columns:
-                    if 'wb_sku' in str(col).lower() or 'артикул wb' in str(col).lower():
+                    col_str = str(col).lower()
+                    # Расширенный поиск колонки с WB SKU
+                    if ('wb_sku' in col_str or 
+                        'артикул wb' in col_str or 
+                        'wb: sku' in col_str or
+                        col == 'WB: SKU'):
                         wb_sku_column = col
                         break
                 
