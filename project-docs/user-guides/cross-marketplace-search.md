@@ -132,7 +132,7 @@ WB штрихкоды: "123321;123123;321321"
 **Версия**: 2.0.0 (добавлен актуальный штрихкод)  
 **Статус**: Актуальный  
 
-**Связанные документы**:
+**Связанные документы**: 
 - [Database Relations](../data-structures/database-relations.md)
 - [Cross-Marketplace Linker](../technical/implementation/cross-marketplace-linker.md)
 
