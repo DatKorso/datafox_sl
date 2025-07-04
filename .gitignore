@@ -273,3 +273,6 @@ activate
 activate.bat
 activate.ps1
 deactivate 
+
+# Claude mcp
+.mcp.json

@@ -896,6 +896,376 @@ with tab2:
     - Массовое исправление найденных расхождений
     """)
 
+    # Анализ расхождений внешних кодов
+    st.divider()
+    st.header("🔍 Анализ расхождений внешних кодов артикулов")
+    st.info("""
+    **Цель анализа:** Найти WB SKU, которые имеют более 2 разных внешних кодов в артикулах поставщика.
+    
+    **Структура артикула поставщика (oz_vendor_code):**
+    - **1 часть:** ВНЕШНИЙ КОД (с коробки товара)
+    - **2 часть:** цвет товара
+    - **3 часть:** размер товара
+    
+    **Пример:** `123123-черный-32`, `123123-черный-33`, `321321-черный-34`
+    
+    **Логика анализа:**
+    - Извлекается внешний код (первая часть до первого дефиса)
+    - Подсчитываются уникальные внешние коды для каждого WB SKU
+    - Сообщается о расхождениях только если более 2 разных внешних кодов
+    """)
+
+    # Initialize session state for external code analysis
+    if 'external_code_analysis_completed' not in st.session_state:
+        st.session_state.external_code_analysis_completed = False
+    if 'external_code_analysis_results' not in st.session_state:
+        st.session_state.external_code_analysis_results = {}
+
+    @st.cache_data
+    def analyze_external_codes_discrepancies(_db_connection):
+        """
+        Анализирует расхождения во внешних кодах артикулов поставщика в пределах каждого WB SKU.
+        
+        Args:
+            _db_connection: Соединение с базой данных
+            
+        Returns:
+            Dict: Результаты анализа с статистикой и данными о расхождениях
+        """
+        try:
+            from utils.cross_marketplace_linker import CrossMarketplaceLinker
+            
+            # Получаем все связи между WB и Ozon
+            linker = CrossMarketplaceLinker(_db_connection)
+            all_links_df = linker.get_bidirectional_links()
+            
+            if all_links_df.empty:
+                st.warning("Не найдено связей между WB и Ozon товарами")
+                return {}
+            
+            # Получаем данные о товарах Ozon
+            oz_vendor_codes = all_links_df['oz_vendor_code'].unique().tolist()
+            
+            if not oz_vendor_codes:
+                st.warning("Не найдено Ozon vendor codes")
+                return {}
+            
+            # Запрос для получения данных из oz_category_products
+            products_query = f"""
+            SELECT DISTINCT
+                ocp.oz_vendor_code,
+                ocp.product_name,
+                ocp.oz_brand,
+                ocp.color,
+                ocp.russian_size,
+                ocp.oz_actual_price
+            FROM oz_category_products ocp
+            WHERE ocp.oz_vendor_code IN ({', '.join(['?'] * len(oz_vendor_codes))})
+                AND ocp.oz_vendor_code IS NOT NULL 
+                AND TRIM(ocp.oz_vendor_code) != ''
+                AND TRIM(ocp.oz_vendor_code) != 'NULL'
+            ORDER BY ocp.oz_vendor_code
+            """
+            
+            products_df = _db_connection.execute(products_query, oz_vendor_codes).fetchdf()
+            
+            if products_df.empty:
+                st.warning("Не найдено данных о товарах Ozon")
+                return {}
+            
+            # Объединяем данные о связях с данными о товарах
+            merged_df = pd.merge(
+                all_links_df[['wb_sku', 'oz_vendor_code']], 
+                products_df, 
+                on='oz_vendor_code', 
+                how='inner'
+            )
+            
+            if merged_df.empty:
+                return {}
+            
+            # Извлекаем внешний код из oz_vendor_code (до первого дефиса)
+            def extract_external_code(vendor_code):
+                """Извлекает внешний код из артикула поставщика"""
+                if pd.isna(vendor_code) or not str(vendor_code).strip():
+                    return None
+                
+                vendor_code_str = str(vendor_code).strip()
+                
+                # Ищем первый дефис
+                if '-' in vendor_code_str:
+                    return vendor_code_str.split('-')[0].strip()
+                else:
+                    # Если дефиса нет, считаем весь код внешним
+                    return vendor_code_str
+            
+            # Добавляем столбец с внешним кодом
+            merged_df['external_code'] = merged_df['oz_vendor_code'].apply(extract_external_code)
+            
+            # Убираем записи без внешнего кода
+            merged_df = merged_df[merged_df['external_code'].notna()]
+            merged_df = merged_df[merged_df['external_code'] != '']
+            
+            if merged_df.empty:
+                st.warning("Не найдено валидных внешних кодов в артикулах")
+                return {}
+            
+            # Анализируем расхождения по wb_sku
+            wb_sku_analysis = []
+            discrepancy_details = []
+            
+            for wb_sku in merged_df['wb_sku'].unique():
+                wb_sku_data = merged_df[merged_df['wb_sku'] == wb_sku]
+                
+                # Получаем уникальные внешние коды для этого WB SKU
+                unique_external_codes = wb_sku_data['external_code'].unique()
+                unique_external_codes = [code for code in unique_external_codes if code and str(code).strip()]
+                
+                # Анализируем только если более 2 разных внешних кодов
+                if len(unique_external_codes) > 2:
+                    wb_sku_analysis.append({
+                        'wb_sku': wb_sku,
+                        'external_codes_count': len(unique_external_codes),
+                        'external_codes': unique_external_codes,
+                        'external_codes_str': ', '.join(unique_external_codes),
+                        'products_count': len(wb_sku_data),
+                        'unique_oz_vendor_codes': len(wb_sku_data['oz_vendor_code'].unique()),
+                        'brands': wb_sku_data['oz_brand'].unique().tolist()
+                    })
+                    
+                    # Добавляем детали для каждого товара этого wb_sku
+                    for _, row in wb_sku_data.iterrows():
+                        discrepancy_details.append({
+                            'wb_sku': row['wb_sku'],
+                            'oz_vendor_code': row['oz_vendor_code'],
+                            'external_code': row['external_code'],
+                            'product_name': row['product_name'],
+                            'oz_brand': row['oz_brand'],
+                            'color': row['color'],
+                            'russian_size': row['russian_size'],
+                            'oz_actual_price': row['oz_actual_price'],
+                            'has_discrepancy': 'Да'
+                        })
+            
+            # Создаем DataFrame с результатами
+            discrepancies_df = pd.DataFrame(wb_sku_analysis)
+            details_df = pd.DataFrame(discrepancy_details)
+            
+            # Статистика
+            total_wb_skus = len(merged_df['wb_sku'].unique())
+            wb_skus_with_discrepancies = len(discrepancies_df)
+            total_products = len(merged_df)
+            
+            statistics = {
+                'total_wb_skus_analyzed': total_wb_skus,
+                'wb_skus_with_discrepancies': wb_skus_with_discrepancies,
+                'wb_skus_without_discrepancies': total_wb_skus - wb_skus_with_discrepancies,
+                'discrepancy_percentage': (wb_skus_with_discrepancies / total_wb_skus * 100) if total_wb_skus > 0 else 0,
+                'total_products_analyzed': total_products,
+                'total_products_with_discrepancies': len(details_df)
+            }
+            
+            return {
+                'statistics': statistics,
+                'discrepancies_df': discrepancies_df,
+                'details_df': details_df,
+                'all_data_df': merged_df
+            }
+            
+        except Exception as e:
+            st.error(f"Ошибка при анализе внешних кодов: {e}")
+            return {}
+
+    # Кнопка запуска анализа
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        if st.button("🔍 Анализировать внешние коды", type="primary", key="analyze_external_codes"):
+            with st.spinner("Анализируем расхождения во внешних кодах..."):
+                analysis_results = analyze_external_codes_discrepancies(db_connection)
+                
+                if analysis_results:
+                    st.session_state.external_code_analysis_completed = True
+                    st.session_state.external_code_analysis_results = analysis_results
+                    st.success("✅ Анализ внешних кодов завершен!")
+                else:
+                    st.session_state.external_code_analysis_completed = False
+    
+    with col2:
+        if st.session_state.external_code_analysis_completed:
+            if st.button("🔄 Очистить результаты анализа", key="clear_external_code_analysis"):
+                st.session_state.external_code_analysis_completed = False
+                st.session_state.external_code_analysis_results = {}
+                st.rerun()
+
+    # Отображение результатов анализа внешних кодов
+    if st.session_state.external_code_analysis_completed and st.session_state.external_code_analysis_results:
+        results = st.session_state.external_code_analysis_results
+        statistics = results.get('statistics', {})
+        discrepancies_df = results.get('discrepancies_df', pd.DataFrame())
+        details_df = results.get('details_df', pd.DataFrame())
+        
+        # Статистика анализа
+        st.subheader("📊 Статистика анализа внешних кодов")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("Всего WB SKU", statistics.get('total_wb_skus_analyzed', 0))
+        with col2:
+            st.metric("С расхождениями", statistics.get('wb_skus_with_discrepancies', 0))
+        with col3:
+            st.metric("Без расхождений", statistics.get('wb_skus_without_discrepancies', 0))
+        with col4:
+            st.metric("Процент расхождений", f"{statistics.get('discrepancy_percentage', 0):.1f}%")
+        with col5:
+            st.metric("Товаров с проблемами", statistics.get('total_products_with_discrepancies', 0))
+        
+        if not discrepancies_df.empty:
+            # Результаты расхождений
+            st.subheader("⚠️ WB SKU с расхождениями во внешних кодах")
+            
+            # Конфигурация колонок для таблицы расхождений
+            discrepancy_column_config = {
+                'wb_sku': 'WB SKU',
+                'external_codes_count': st.column_config.NumberColumn('Кол-во внешних кодов', format="%d"),
+                'external_codes_str': st.column_config.TextColumn('Внешние коды', width="medium"),
+                'products_count': st.column_config.NumberColumn('Всего товаров', format="%d"),
+                'unique_oz_vendor_codes': st.column_config.NumberColumn('Уникальных артикулов', format="%d"),
+                'brands': 'Бренды'
+            }
+            
+            # Обработка колонки brands для отображения
+            display_discrepancies_df = discrepancies_df.copy()
+            display_discrepancies_df['brands'] = display_discrepancies_df['brands'].apply(
+                lambda x: ', '.join(x) if isinstance(x, list) else str(x)
+            )
+            
+            st.dataframe(
+                display_discrepancies_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=discrepancy_column_config
+            )
+            
+            # Детальный просмотр расхождений
+            st.subheader("🔍 Детальный просмотр расхождений во внешних кодах")
+            
+            if not discrepancies_df.empty:
+                selected_wb_sku_ext = st.selectbox(
+                    "Выберите WB SKU для детального просмотра:",
+                    options=discrepancies_df['wb_sku'].tolist(),
+                    help="Выберите WB SKU для просмотра всех связанных товаров Ozon",
+                    key="external_code_selected_wb_sku"
+                )
+                
+                if selected_wb_sku_ext:
+                    selected_details = details_df[details_df['wb_sku'] == selected_wb_sku_ext]
+                    
+                    if not selected_details.empty:
+                        st.write(f"**Товары Ozon для WB SKU {selected_wb_sku_ext}:**")
+                        
+                        detail_column_config = {
+                            'wb_sku': 'WB SKU',
+                            'oz_vendor_code': 'Артикул Ozon',
+                            'external_code': st.column_config.TextColumn('Внешний код', width="medium"),
+                            'product_name': 'Название товара',
+                            'oz_brand': 'Бренд',
+                            'color': 'Цвет',
+                            'russian_size': 'Размер',
+                            'oz_actual_price': st.column_config.NumberColumn('Цена, ₽', format="%.0f"),
+                            'has_discrepancy': 'Есть расхождения'
+                        }
+                        
+                        st.dataframe(
+                            selected_details,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config=detail_column_config
+                        )
+                        
+                        # Показываем уникальные внешние коды для выбранного WB SKU
+                        unique_codes = selected_details['external_code'].unique()
+                        st.warning(f"**Найдено {len(unique_codes)} разных внешних кодов:** {', '.join(unique_codes)}")
+                        
+                        # Группировка по внешним кодам
+                        st.write("**Распределение товаров по внешним кодам:**")
+                        for code in unique_codes:
+                            code_products = selected_details[selected_details['external_code'] == code]
+                            with st.expander(f"Внешний код: {code} ({len(code_products)} товаров)"):
+                                st.dataframe(
+                                    code_products[['oz_vendor_code', 'color', 'russian_size', 'oz_actual_price']],
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        'oz_vendor_code': 'Артикул Ozon',
+                                        'color': 'Цвет',
+                                        'russian_size': 'Размер',
+                                        'oz_actual_price': st.column_config.NumberColumn('Цена, ₽', format="%.0f")
+                                    }
+                                )
+            
+            # Экспорт результатов анализа внешних кодов
+            st.subheader("📤 Экспорт результатов анализа внешних кодов")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Экспорт сводной таблицы расхождений
+                summary_export = display_discrepancies_df.copy()
+                summary_csv = summary_export.to_csv(index=False, encoding='utf-8-sig')
+                
+                st.download_button(
+                    label="📊 Скачать сводную таблицу расхождений",
+                    data=summary_csv,
+                    file_name=f"external_codes_discrepancies_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    key="download_external_codes_summary"
+                )
+            
+            with col2:
+                # Экспорт детальных данных
+                details_csv = details_df.to_csv(index=False, encoding='utf-8-sig')
+                
+                st.download_button(
+                    label="📋 Скачать детальные данные",
+                    data=details_csv,
+                    file_name=f"external_codes_discrepancies_details_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    key="download_external_codes_details"
+                )
+        
+        else:
+            st.success("🎉 Отлично! Все проанализированные WB SKU имеют не более 2 разных внешних кодов.")
+    
+    else:
+        st.info("💡 Нажмите кнопку 'Анализировать внешние коды' для начала анализа расхождений во внешних кодах артикулов.")
+
+    # Пояснения к анализу внешних кодов
+    with st.expander("ℹ️ Подробнее об анализе внешних кодов"):
+        st.write("""
+        **Что анализируется:**
+        
+        1. **Извлечение внешнего кода:** Из каждого `oz_vendor_code` извлекается первая часть до первого дефиса
+        2. **Группировка:** Товары группируются по `wb_sku`
+        3. **Подсчет уникальных кодов:** Для каждого WB SKU подсчитывается количество уникальных внешних кодов
+        4. **Фильтрация:** Показываются только WB SKU с более чем 2 разными внешними кодами
+        
+        **Примеры артикулов:**
+        - `123123-черный-32` → внешний код: `123123`
+        - `123123-белый-34` → внешний код: `123123`
+        - `321321-красный-36` → внешний код: `321321`
+        
+        **Зачем это нужно:**
+        - Выявление товаров с разными поставками в рамках одного WB SKU
+        - Контроль качества данных и соответствия артикулов
+        - Обнаружение потенциальных ошибок в связывании товаров
+        
+        **Что делать с найденными расхождениями:**
+        - Проверить правильность связывания товаров через штрихкоды
+        - Убедиться, что все товары действительно относятся к одному WB SKU
+        - При необходимости скорректировать данные или разделить на разные WB SKU
+        """)
+
     # Массовая стандартизация названий цветов
     st.divider()
     st.header("🔧 Инструмент массовой стандартизации названий цветов")
