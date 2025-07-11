@@ -1,0 +1,143 @@
+ulmaasync function generateRecommendations() {
+    const progressBar = document.getElementById('recommendationsProgress');
+    const progressText = document.getElementById('recommendationsProgressText');
+    const statusElement = document.getElementById('recommendationsStatus');
+
+    progressBar.style.width = '0%';
+    progressBar.style.display = 'block';
+    progressText.style.display = 'block';
+    statusElement.textContent = 'Генерация рекомендаций...';
+
+    // Запускаем отслеживание прогресса
+    const eventSource = new EventSource('/recommendations/progress');
+
+    eventSource.onmessage = function(event) {
+        console.log('Raw SSE message:', event.data);
+
+        try {
+            const data = JSON.parse(event.data);
+            console.log('Parsed data:', data);
+
+            if (data.progress !== undefined) {
+                const progress = Math.round(data.progress);
+                console.log('Progress:', progress);
+                progressBar.style.width = progress + '%';
+                progressText.textContent = progress + '%';
+
+                if (progress >= 100) {
+                    console.log('Process complete');
+                    setTimeout(() => {
+                        progressBar.style.display = 'none';
+                        progressText.style.display = 'none';
+                        eventSource.close();
+                        statusElement.textContent = 'Рекомендации успешно сгенерированы';
+                    }, 1000);
+                }
+            }
+        } catch (e) {
+            console.error('Error parsing message:', e);
+            console.error('Failed message content:', event.data);
+            statusElement.textContent = 'Ошибка при генерации рекомендаций';
+            progressBar.style.display = 'none';
+            progressText.style.display = 'none';
+            eventSource.close();
+        }
+    };
+
+    eventSource.onerror = function(err) {
+        console.error('EventSource error:', err);
+        statusElement.textContent = 'Ошибка при генерации рекомендаций';
+        progressBar.style.display = 'none';
+        progressText.style.display = 'none';
+        eventSource.close();
+    };
+
+    // Запускаем генерацию рекомендаций
+    try {
+        const response = await fetch('/generate-recommendations', {
+            method: 'POST'
+        });
+
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+
+        const result = await response.json();
+        console.log('Generation result:', result);
+    } catch (error) {
+        console.error('Error starting generation:', error);
+        statusElement.textContent = 'Ошибка при генерации рекомендаций';
+        progressBar.style.display = 'none';
+        progressText.style.display = 'none';
+        eventSource.close();
+    }
+}
+
+async function generateRichContent() {
+    const progressContainer = document.getElementById('richContentProgressContainer');
+    const progressBar = document.getElementById('richContentProgressBar');
+    const progressText = document.getElementById('richContentProgressText');
+    const statusDiv = document.getElementById('richContentStatus');
+
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressText.textContent = '0%';
+    statusDiv.textContent = 'Генерация Rich-контента...';
+
+    const eventSource = new EventSource('/generate-rich-content');
+
+    eventSource.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            const progress = Math.round(data.progress);
+
+            progressBar.style.width = progress + '%';
+            progressText.textContent = progress + '%';
+
+            if (data.message) {
+                statusDiv.textContent = data.message;
+            }
+
+            if (progress >= 100) {
+                eventSource.close();
+                progressContainer.style.display = 'none';
+                statusDiv.textContent = 'Rich-контент успешно сгенерирован';
+            }
+        } catch (error) {
+            console.error('Error parsing SSE message:', error);
+            eventSource.close();
+            progressContainer.style.display = 'none';
+            statusDiv.textContent = 'Ошибка при генерации Rich-контента';
+        }
+    };
+
+    eventSource.onerror = function(err) {
+        console.error('SSE Error:', err);
+        eventSource.close();
+        progressContainer.style.display = 'none';
+        statusDiv.textContent = 'Ошибка при генерации Rich-контента';
+    };
+}
+
+<div class="upload-section">
+    <h2>Управление рабочей таблицей</h2>
+    <button onclick="calculateProductWork()">Рассчитать</button>
+    <button class="clear" onclick="clearProductWork()">Очистить</button>
+    <div class="progress-container" id="productWorkProgressContainer" style="display: none;">
+        <div class="progress-bar" id="productWorkProgressBar"></div>
+        <div class="progress-text" id="productWorkProgressText">0%</div>
+    </div>
+    <div id="productWorkStatus"></div>
+</div>
+
+<div class="upload-section">
+    <h2>Управление Rich-контентом</h2>
+    <button onclick="generateRichContent()">Сгенерировать Rich-контент</button>
+    <div class="progress-container" id="richContentProgressContainer" style="display: none;">
+        <div class="progress-bar" id="richContentProgressBar"></div>
+        <div class="progress-text" id="richContentProgressText">0%</div>
+    </div>
+    <div id="richContentStatus"></div>
+</div>
+
+<script>

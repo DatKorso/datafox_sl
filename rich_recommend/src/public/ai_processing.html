@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Processing</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .upload-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .file-input-container {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .file-input-container:hover {
+            border-color: #666;
+        }
+        .file-input {
+            display: none;
+        }
+        .submit-button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .submit-button:hover {
+            background-color: #45a049;
+        }
+        .submit-button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .progress-container {
+            display: none;
+            margin-top: 20px;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .status {
+            margin-top: 10px;
+            text-align: center;
+            color: #666;
+        }
+        .selected-file {
+            margin-top: 10px;
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Обработка Excel файла через AI</h1>
+        <form class="upload-form" id="uploadForm">
+            <div class="file-input-container" id="dropZone">
+                <p>Перетащите файл сюда или кликните для выбора</p>
+                <input type="file" class="file-input" id="fileInput" accept=".xlsx,.xls">
+                <div class="selected-file" id="selectedFile"></div>
+            </div>
+            <button type="submit" class="submit-button" id="submitButton" disabled>
+                Обработать файл
+            </button>
+        </form>
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="status" id="status">Подготовка к обработке...</div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const dropZone = document.getElementById('dropZone');
+        const submitButton = document.getElementById('submitButton');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const status = document.getElementById('status');
+        const selectedFile = document.getElementById('selectedFile');
+
+        // Обработка drag & drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = '#4CAF50';
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.style.borderColor = '#ccc';
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = '#ccc';
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFileSelect(files[0]);
+            }
+        });
+
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+
+        function handleFileSelect(file) {
+            if (file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                file.type === 'application/vnd.ms-excel') {
+                fileInput.files = new DataTransfer().files;
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                fileInput.files = transfer.files;
+                selectedFile.textContent = `Выбран файл: ${file.name}`;
+                submitButton.disabled = false;
+            } else {
+                alert('Пожалуйста, выберите файл Excel (.xlsx или .xls)');
+                selectedFile.textContent = '';
+                submitButton.disabled = true;
+            }
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            submitButton.disabled = true;
+            progressContainer.style.display = 'block';
+            progressFill.style.width = '0%';
+            status.textContent = 'Загрузка файла...';
+
+            try {
+                const response = await fetch('/api/excel-ai/process', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'processed_file.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+
+                    status.textContent = 'Обработка завершена! Файл загружен.';
+                    progressFill.style.width = '100%';
+                } else {
+                    throw new Error('Ошибка при обработке файла');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                status.textContent = 'Произошла ошибка при обработке файла';
+            } finally {
+                submitButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html> 

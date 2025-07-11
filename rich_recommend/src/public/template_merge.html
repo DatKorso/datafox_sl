@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Объединение шаблонов</title>
+    <link rel="stylesheet" href="/css/progress.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .upload-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .file-inputs {
+            margin-bottom: 20px;
+        }
+        .file-input {
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="upload-section">
+        <h2>Объединение шаблонов</h2>
+        <div class="file-inputs">
+            <div class="file-input">
+                <label for="file1">Первый файл:</label>
+                <input type="file" id="file1" accept=".xlsx" required>
+            </div>
+            <div class="file-input">
+                <label for="file2">Второй файл:</label>
+                <input type="file" id="file2" accept=".xlsx" required>
+            </div>
+        </div>
+        <button onclick="mergeTemplates()" id="mergeButton">Объединить файлы</button>
+        <div id="templateMergeProgressContainer" class="progress-container" style="display: none;">
+            <div class="progress-bar" id="templateMergeProgressBar"></div>
+            <div class="progress-text" id="templateMergeProgressText">0%</div>
+        </div>
+        <div id="templateMergeStatus" class="status"></div>
+    </div>
+
+    <script>
+        const progressBar = new ProgressBar('templateMerge');
+
+        async function mergeTemplates() {
+            const file1 = document.getElementById('file1').files[0];
+            const file2 = document.getElementById('file2').files[0];
+
+            if (!file1 || !file2) {
+                alert('Пожалуйста, выберите оба файла');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file1', file1);
+            formData.append('file2', file2);
+
+            const mergeButton = document.getElementById('mergeButton');
+            mergeButton.disabled = true;
+
+            try {
+                const response = await fetch('/merge-templates', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'merged_template.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.message || 'Ошибка при объединении файлов');
+                }
+            } catch (error) {
+                document.getElementById('templateMergeStatus').textContent =
+                    `Ошибка: ${error.message}`;
+            } finally {
+                mergeButton.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
