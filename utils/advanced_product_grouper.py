@@ -382,8 +382,12 @@ class AdvancedProductGrouper:
         ]
         
         for _, item in compensator_candidates.iterrows():
-            pool_key = self._get_pool_key(item, config.grouping_columns)
-            pools[pool_key].append(item.to_dict())
+            # НОВОЕ: Исключаем товары с браком из компенсаторов
+            if not self._is_defective_item(item):
+                pool_key = self._get_pool_key(item, config.grouping_columns)
+                pools[pool_key].append(item.to_dict())
+            else:
+                self._log(f"Исключен товар с браком {item['wb_sku']} из компенсаторов")
         
         # 2. Дополняем компенсаторами из базы данных
         self._add_database_compensators(pools, config)
@@ -489,6 +493,22 @@ class AdvancedProductGrouper:
             WHERE r.avg_rating >= {config.min_group_rating}
             AND r.avg_rating IS NOT NULL
             AND COALESCE(stock_summary.total_stock, 0) = 0
+            AND NOT EXISTS (
+                SELECT 1 FROM wb_products wb_defective
+                INNER JOIN (
+                    SELECT wb_sku, TRIM(value) as barcode 
+                    FROM (
+                        SELECT wb_sku, UNNEST(string_split(wb_barcodes, ';')) as value
+                        FROM wb_products
+                        WHERE wb_barcodes IS NOT NULL AND wb_barcodes != ''
+                    )
+                    WHERE TRIM(value) != ''
+                ) wb_norm_def ON wb_defective.wb_sku = wb_norm_def.wb_sku
+                INNER JOIN oz_barcodes ob_def ON TRIM(wb_norm_def.barcode) = TRIM(ob_def.oz_barcode)
+                INNER JOIN oz_products op_def ON ob_def.oz_product_id = op_def.oz_product_id
+                WHERE wb_defective.wb_sku = p.wb_sku
+                AND op_def.oz_vendor_code LIKE 'БракSH%'
+            )
             ORDER BY r.avg_rating DESC
             LIMIT 100
             """
@@ -762,10 +782,30 @@ class AdvancedProductGrouper:
         return sum(ratings) / len(ratings)
     
     def _is_defective_item(self, item: pd.Series) -> bool:
-        """Проверяет, является ли товар дефектным."""
-        # Логика определения дефектных товаров
-        # Можно расширить по необходимости
-        return False
+        """Проверяет, является ли товар дефектным (oz_vendor_code начинается с "БракSH")."""
+        try:
+            wb_sku = str(item.get('wb_sku', ''))
+            if not wb_sku:
+                return False
+            
+            # Получаем связанные oz_vendor_code для проверки на брак
+            extended_links = self.linker.get_extended_links([wb_sku], include_product_details=False)
+            
+            if extended_links.empty:
+                return False
+            
+            # Проверяем есть ли oz_vendor_code начинающиеся с "БракSH"
+            for _, link in extended_links.iterrows():
+                oz_vendor_code = link.get('oz_vendor_code', '')
+                if isinstance(oz_vendor_code, str) and oz_vendor_code.startswith('БракSH'):
+                    self._log(f"Товар {wb_sku} является бракованным (oz_vendor_code: {oz_vendor_code})", "info")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self._log(f"Ошибка проверки брака для товара {item.get('wb_sku', 'Unknown')}: {str(e)}", "error")
+            return False
     
     def _calculate_statistics(
         self, 

@@ -300,18 +300,22 @@ class CrossMarketplaceLinker:
         if linked_df.empty:
             return pd.DataFrame()
         
-        # Получаем рейтинги для найденных oz_sku
+        # Получаем рейтинги для найденных oz_sku, исключая товары с браком
         oz_skus_for_rating = linked_df['oz_sku'].unique().tolist()
         
         try:
             oz_skus_str = ', '.join([f"'{sku}'" for sku in oz_skus_for_rating])
+            
+            # НОВОЕ: Исключаем товары с браком (oz_vendor_code начинается с "БракSH") из расчета рейтингов
             rating_query = f"""
             SELECT 
-                oz_sku,
-                rating,
-                rev_number
-            FROM oz_card_rating 
-            WHERE oz_sku IN ({oz_skus_str})
+                r.oz_sku,
+                r.rating,
+                r.rev_number
+            FROM oz_card_rating r
+            INNER JOIN oz_products p ON CAST(r.oz_sku AS VARCHAR) = CAST(p.oz_sku AS VARCHAR)
+            WHERE r.oz_sku IN ({oz_skus_str})
+            AND (p.oz_vendor_code IS NULL OR NOT p.oz_vendor_code LIKE 'БракSH%')
             """
             
             ratings_df = self.connection.execute(rating_query).fetchdf()

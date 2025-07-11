@@ -193,6 +193,13 @@
 ### Data Import & Export
 - Import reports from Excel/CSV files
 - Support for folder-based imports (multiple files)
+- **Excel File Merging (Page 15)**
+  - Template-based merging with structure preservation
+  - Selective sheet processing (merge vs preserve)
+  - Brand-based filtering with automatic column detection
+  - Article-based filtering for video content sheets
+  - Progress tracking with detailed status updates
+  - All template sheets preserved in final output
 - **Google Sheets Integration**
   - Direct import from Google Sheets documents
   - Real-time data synchronization

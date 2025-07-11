@@ -809,3 +809,319 @@ def render_help_section():
         - ✅ Улучшенная архитектура кода
         - ✅ Расширенные возможности экспорта
         """)
+
+
+def create_marketplace_summary_table(result: GroupingResult, connection) -> pd.DataFrame:
+    """Создает итоговую таблицу для загрузки на маркетплейс.
+    
+    Структура таблицы:
+    - wb_sku: артикул WB
+    - oz_vendor_code: артикул поставщика на Озоне
+    - объединяющий_код: код для объединения товаров
+    
+    Логика объединяющего кода:
+    - Если товар приоритетный - объединяющий код = wb_sku этого товара
+    - Если товар не приоритетный - объединяющий код = wb_sku приоритетного товара из той же группы
+    
+    Args:
+        result: Результат группировки
+        connection: Соединение с базой данных
+        
+    Returns:
+        DataFrame с итоговой таблицей
+    """
+    try:
+        from utils.cross_marketplace_linker import CrossMarketplaceLinker
+        
+        # Собираем все wb_sku из всех групп + товары с браком
+        all_wb_skus = []
+        for group in result.groups:
+            for item in group['items']:
+                all_wb_skus.append(item['wb_sku'])
+        
+        # Добавляем товары с браком
+        for defective_item in result.defective_items:
+            all_wb_skus.append(defective_item['wb_sku'])
+        
+        if not all_wb_skus:
+            return pd.DataFrame(columns=['wb_sku', 'oz_vendor_code', 'объединяющий_код'])
+        
+        # Получаем связи wb_sku -> oz_vendor_code
+        linker = CrossMarketplaceLinker(connection)
+        extended_links = linker.get_extended_links(all_wb_skus, include_product_details=False)
+        
+        # Создаем итоговую таблицу
+        marketplace_rows = []
+        
+        for group in result.groups:
+            # Определяем приоритетный товар группы (главный wb_sku)
+            main_wb_sku = group.get('main_wb_sku')
+            
+            # Если main_wb_sku не определен, берем первый приоритетный товар
+            if not main_wb_sku:
+                priority_items = [item for item in group['items'] if item.get('is_priority_item', False)]
+                if priority_items:
+                    main_wb_sku = priority_items[0]['wb_sku']
+                else:
+                    # Если нет приоритетных товаров, берем первый товар группы
+                    main_wb_sku = group['items'][0]['wb_sku']
+            
+            # Обрабатываем все товары группы
+            for item in group['items']:
+                wb_sku = item['wb_sku']
+                is_priority = item.get('is_priority_item', False)
+                
+                # Определяем объединяющий код
+                if is_priority:
+                    # Приоритетный товар - объединяющий код = его wb_sku
+                    unifying_code = wb_sku
+                else:
+                    # Не приоритетный товар - объединяющий код = wb_sku приоритетного товара
+                    unifying_code = main_wb_sku
+                
+                # Получаем все oz_vendor_code для этого wb_sku
+                wb_links = extended_links[extended_links['wb_sku'] == wb_sku]
+                
+                if not wb_links.empty:
+                    # Создаем строку для каждого oz_vendor_code
+                    for _, link in wb_links.iterrows():
+                        oz_vendor_code = link.get('oz_vendor_code', '')
+                        
+                        marketplace_rows.append({
+                            'wb_sku': wb_sku,
+                            'oz_vendor_code': oz_vendor_code,
+                            'объединяющий_код': unifying_code
+                        })
+                else:
+                    # Если нет связей с Озоном, добавляем строку с пустым oz_vendor_code
+                    marketplace_rows.append({
+                        'wb_sku': wb_sku,
+                        'oz_vendor_code': '',
+                        'объединяющий_код': unifying_code
+                    })
+        
+        # НОВОЕ: Обрабатываем товары с браком отдельно
+        for defective_item in result.defective_items:
+            wb_sku = defective_item['wb_sku']
+            
+            # Для товаров с браком используем уникальный код объединения
+            unifying_code = f"БракSH_{wb_sku}"
+            
+            # Получаем все oz_vendor_code для этого wb_sku
+            wb_links = extended_links[extended_links['wb_sku'] == wb_sku]
+            
+            if not wb_links.empty:
+                # Создаем строку для каждого oz_vendor_code
+                for _, link in wb_links.iterrows():
+                    oz_vendor_code = link.get('oz_vendor_code', '')
+                    
+                    marketplace_rows.append({
+                        'wb_sku': wb_sku,
+                        'oz_vendor_code': oz_vendor_code,
+                        'объединяющий_код': unifying_code
+                    })
+            else:
+                # Если нет связей с Озоном, добавляем строку с пустым oz_vendor_code
+                marketplace_rows.append({
+                    'wb_sku': wb_sku,
+                    'oz_vendor_code': '',
+                    'объединяющий_код': unifying_code
+                })
+        
+        # Создаем DataFrame
+        if marketplace_rows:
+            marketplace_df = pd.DataFrame(marketplace_rows)
+            
+            # Убираем дубликаты (может быть несколько одинаковых строк)
+            marketplace_df = marketplace_df.drop_duplicates()
+            
+            # Сортируем по объединяющему коду, затем по wb_sku
+            marketplace_df = marketplace_df.sort_values(['объединяющий_код', 'wb_sku'])
+            
+            return marketplace_df
+        else:
+            return pd.DataFrame(columns=['wb_sku', 'oz_vendor_code', 'объединяющий_код'])
+        
+    except Exception as e:
+        st.error(f"Ошибка при создании итоговой таблицы: {str(e)}")
+        return pd.DataFrame(columns=['wb_sku', 'oz_vendor_code', 'объединяющий_код'])
+
+
+def export_marketplace_summary_to_excel(marketplace_df: pd.DataFrame) -> Optional[bytes]:
+    """Экспортирует итоговую таблицу для маркетплейса в Excel.
+    
+    Args:
+        marketplace_df: DataFrame с итоговой таблицей
+        
+    Returns:
+        bytes: Данные Excel файла или None при ошибке
+    """
+    try:
+        import io
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Итоговая таблица"
+        
+        # Заголовки
+        headers = ['WB SKU', 'OZ Vendor Code', 'Объединяющий код']
+        ws.append(headers)
+        
+        # Стилизация заголовков
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center")
+        
+        # Данные
+        for _, row in marketplace_df.iterrows():
+            ws.append([
+                row['wb_sku'],
+                row['oz_vendor_code'],
+                row['объединяющий_код']
+            ])
+        
+        # Автоподбор ширины колонок
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Сохраняем в байты
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output.getvalue()
+        
+    except Exception as e:
+        st.error(f"Ошибка при экспорте итоговой таблицы в Excel: {str(e)}")
+        return None
+
+
+def export_marketplace_summary_to_csv(marketplace_df: pd.DataFrame) -> Optional[str]:
+    """Экспортирует итоговую таблицу для маркетплейса в CSV.
+    
+    Args:
+        marketplace_df: DataFrame с итоговой таблицей
+        
+    Returns:
+        str: Данные CSV файла или None при ошибке
+    """
+    try:
+        import io
+        import csv
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Заголовки
+        writer.writerow(['WB SKU', 'OZ Vendor Code', 'Объединяющий код'])
+        
+        # Данные
+        for _, row in marketplace_df.iterrows():
+            writer.writerow([
+                row['wb_sku'],
+                row['oz_vendor_code'],
+                row['объединяющий_код']
+            ])
+        
+        return output.getvalue()
+        
+    except Exception as e:
+        st.error(f"Ошибка при экспорте итоговой таблицы в CSV: {str(e)}")
+        return None
+
+
+def render_marketplace_summary_table(result: GroupingResult, connection):
+    """Отображает итоговую таблицу для загрузки на маркетплейс.
+    
+    Args:
+        result: Результат группировки
+        connection: Соединение с базой данных
+    """
+    st.subheader("📋 Итоговая таблица для загрузки на маркетплейс")
+    
+    # Создаем итоговую таблицу
+    with st.spinner("Формирование итоговой таблицы..."):
+        marketplace_df = create_marketplace_summary_table(result, connection)
+    
+    if marketplace_df.empty:
+        st.warning("⚠️ Не удалось создать итоговую таблицу - нет данных для экспорта")
+        return
+    
+    # Показываем статистику
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Всего записей", len(marketplace_df))
+    
+    with col2:
+        unique_wb_skus = marketplace_df['wb_sku'].nunique()
+        st.metric("Уникальных WB SKU", unique_wb_skus)
+    
+    with col3:
+        unique_oz_codes = marketplace_df[marketplace_df['oz_vendor_code'] != '']['oz_vendor_code'].nunique()
+        st.metric("Уникальных OZ кодов", unique_oz_codes)
+    
+    with col4:
+        unique_unifying_codes = marketplace_df['объединяющий_код'].nunique()
+        st.metric("Уникальных групп", unique_unifying_codes)
+    
+    # Показываем превью таблицы
+    st.markdown("**Превью таблицы (первые 20 строк):**")
+    st.dataframe(marketplace_df.head(20), use_container_width=True)
+    
+    # Показываем пример группировки
+    with st.expander("📊 Пример группировки по объединяющему коду", expanded=False):
+        if len(marketplace_df) > 0:
+            # Берем первую группу для примера
+            first_group = marketplace_df['объединяющий_код'].iloc[0]
+            group_example = marketplace_df[marketplace_df['объединяющий_код'] == first_group]
+            
+            st.write(f"**Группа с объединяющим кодом: {first_group}**")
+            st.dataframe(group_example, use_container_width=True)
+            
+            st.write(f"В этой группе **{len(group_example)} товаров** объединены одним кодом")
+    
+    # Кнопки экспорта
+    st.divider()
+    st.markdown("**💾 Экспорт итоговой таблицы:**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📊 Экспорт в Excel", key="export_marketplace_excel", use_container_width=True):
+            excel_data = export_marketplace_summary_to_excel(marketplace_df)
+            if excel_data:
+                st.download_button(
+                    label="⬇️ Скачать Excel файл",
+                    data=excel_data,
+                    file_name=f"marketplace_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="download_marketplace_excel"
+                )
+    
+    with col2:
+        if st.button("📋 Экспорт в CSV", key="export_marketplace_csv", use_container_width=True):
+            csv_data = export_marketplace_summary_to_csv(marketplace_df)
+            if csv_data:
+                st.download_button(
+                    label="⬇️ Скачать CSV файл",
+                    data=csv_data,
+                    file_name=f"marketplace_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="download_marketplace_csv"
+                )
