@@ -99,7 +99,8 @@ ozon_fields_options = {
     "Oz: Штрихкод (oz_barcode)": ("oz_barcodes", "oz_barcode"), # From oz_barcodes table
     "Oz: Объединить на карточке (merge_on_card)": ("oz_category_products", "merge_on_card"), # From oz_category_products table
     "Oz: Название цвета (color_name)": ("oz_category_products", "color_name"), # From oz_category_products table
-    "Oz: Размер производителя (manufacturer_size)": ("oz_category_products", "manufacturer_size") # From oz_category_products table
+    "Oz: Размер производителя (manufacturer_size)": ("oz_category_products", "manufacturer_size"), # From oz_category_products table
+    "Oz: Изображение (main_photo_url)": ("oz_category_products", "main_photo_url") # From oz_category_products table
 }
 
 # Wildberries Fields

@@ -146,6 +146,31 @@ def import_data_from_dataframe(
                             st.warning(f"Внимание: {null_count} значений в колонке {target_col} не удалось конвертировать в числа и были заменены на NULL")
                     except Exception as e_conv:
                         st.warning(f"Could not convert column {target_col} to integer for table {table_name}. Error: {e_conv}. Leaving as is.")
+                elif notes == "convert_to_bigint":
+                    try:
+                        # Convert string to BIGINT (for large SKU/Product ID values)
+                        # First, clean the data - remove any non-numeric characters except digits
+                        cleaned_series = df_to_import[target_col].astype(str).str.replace(r'[^\d]', '', regex=True)
+                        # Convert empty strings to NaN
+                        cleaned_series = cleaned_series.replace('', pd.NA)
+                        # Convert to numeric, handling large integers
+                        numeric_col = pd.to_numeric(cleaned_series, errors='coerce')
+                        df_to_import[target_col] = numeric_col.astype('Int64') # Use nullable Int64 for BIGINT
+                        
+                        # Count and log conversion issues
+                        null_count = df_to_import[target_col].isna().sum()
+                        if null_count > 0:
+                            st.warning(f"Внимание: {null_count} значений в колонке {target_col} не удалось конвертировать в BIGINT и были заменены на NULL")
+                        else:
+                            st.info(f"✅ Успешно конвертировано {len(df_to_import)} значений в колонке {target_col} в BIGINT")
+                    except Exception as e_conv:
+                        st.error(f"Ошибка конвертации колонки {target_col} в BIGINT для таблицы {table_name}. Error: {e_conv}. Оставляем как есть.")
+                        # Fallback - try basic numeric conversion
+                        try:
+                            numeric_col = pd.to_numeric(df_to_import[target_col], errors='coerce')
+                            df_to_import[target_col] = numeric_col.astype('Int64')
+                        except:
+                            pass  # Keep original data if all conversions fail
             else:
                 # Column is missing in input data - create it as NULL column
                 df_to_import[target_col] = pd.NA

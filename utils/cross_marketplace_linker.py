@@ -909,15 +909,18 @@ class CrossMarketplaceLinker:
 
             for barcode in clean_barcodes:
                 # Ищем по штрихкоду в обеих системах
+                # ИСПРАВЛЕНО: Добавляем все поля wb_products для поиска по штрихкоду
                 wb_query = f"""
                 WITH split_barcodes AS (
                     SELECT 
                         p.wb_sku,
                         p.wb_barcodes,
+                        p.wb_category,
+                        p.wb_brand,
                         UNNEST(string_split(p.wb_barcodes, ';')) AS individual_barcode
                     FROM wb_products p
                 )
-                SELECT wb_sku, wb_barcodes, TRIM(individual_barcode) as barcode
+                SELECT wb_sku, wb_barcodes, wb_category, wb_brand, TRIM(individual_barcode) as barcode
                 FROM split_barcodes
                 WHERE TRIM(individual_barcode) = ?
                 """
@@ -951,14 +954,21 @@ class CrossMarketplaceLinker:
                 if not oz_matches.empty:
                     # Для поиска по штрихкоду: проверяем является ли найденный штрихкод актуальным для Ozon
                     # Получаем максимальную позицию штрихкода для каждого oz_vendor_code среди всех его штрихкодов
+                    # ИСПРАВЛЕНО: Разделяем оконную функцию и агрегацию через CTE
                     all_oz_positions_query = """
+                    WITH barcode_positions AS (
+                        SELECT 
+                            p.oz_vendor_code,
+                            ROW_NUMBER() OVER (PARTITION BY p.oz_vendor_code ORDER BY b.oz_barcode) AS position
+                        FROM oz_barcodes b
+                        LEFT JOIN oz_products p ON b.oz_product_id = p.oz_product_id
+                        WHERE p.oz_vendor_code IN ({})
+                    )
                     SELECT 
-                        p.oz_vendor_code,
-                        MAX(ROW_NUMBER() OVER (PARTITION BY p.oz_vendor_code ORDER BY b.oz_barcode)) AS max_position
-                    FROM oz_barcodes b
-                    LEFT JOIN oz_products p ON b.oz_product_id = p.oz_product_id
-                    WHERE p.oz_vendor_code IN ({})
-                    GROUP BY p.oz_vendor_code
+                        oz_vendor_code,
+                        MAX(position) AS max_position
+                    FROM barcode_positions
+                    GROUP BY oz_vendor_code
                     """.format(','.join(['?' for _ in oz_matches['oz_vendor_code'].unique()]))
                     
                     max_positions_all = self.connection.execute(all_oz_positions_query, 
@@ -1008,8 +1018,15 @@ class CrossMarketplaceLinker:
                                 elif isinstance(field_detail, tuple):
                                     table_alias, column_name = field_detail
 
-                                    if table_alias == 'wb_products' and column_name == 'wb_sku':
-                                        result_row[field_label] = wb_row['wb_sku']
+                                    if table_alias == 'wb_products':
+                                        # ИСПРАВЛЕНО: Используем данные из wb_row, если они есть, иначе дополнительный запрос
+                                        if column_name in wb_row:
+                                            result_row[field_label] = wb_row[column_name]
+                                        else:
+                                            # Для полей, которых нет в wb_row, делаем дополнительный запрос
+                                            result_row[field_label] = self._get_additional_field_data(
+                                                pd.Series({'wb_sku': wb_row['wb_sku']}), table_alias, column_name
+                                            )
                                     elif table_alias == 'oz_products':
                                         result_row[field_label] = oz_row.get(column_name, '')
                                     elif table_alias == 'oz_barcodes' and column_name == 'oz_barcode':

@@ -1100,7 +1100,8 @@ class RichContentGenerator:
     def generate_rich_content_json(
         self, 
         recommendations: List[Recommendation],
-        template_type: str = "recommendations_carousel"
+        template_type: str = "recommendations_carousel",
+        parent_product: ProductInfo = None
     ) -> str:
         """
         Генерация JSON строки Rich Content для Ozon
@@ -1108,6 +1109,7 @@ class RichContentGenerator:
         Args:
             recommendations: Список рекомендаций товаров
             template_type: Тип шаблона ('recommendations_carousel', 'recommendations_grid', 'ozon_showcase')
+            parent_product: Информация о родительском товаре (для определения пола)
             
         Returns:
             JSON строка для поля rich_content_json
@@ -1123,10 +1125,10 @@ class RichContentGenerator:
             elif template_type == "recommendations_grid":
                 content_data = self._create_recommendations_grid(recommendations)
             elif template_type == "ozon_showcase":
-                content_data = self._create_ozon_showcase(recommendations)
+                content_data = self._create_ozon_showcase(recommendations, parent_product)
             else:
                 logger.warning(f"Неизвестный тип шаблона: {template_type}")
-                content_data = self._create_ozon_showcase(recommendations)
+                content_data = self._create_ozon_showcase(recommendations, parent_product)
             
             # Оборачиваем в стандартную структуру Ozon Rich Content
             rich_content = {
@@ -1223,8 +1225,22 @@ class RichContentGenerator:
         
         return [title_block] + grid_rows
     
-    def _create_ozon_showcase(self, recommendations: List[Recommendation]) -> List[Dict[str, Any]]:
-        """Создание Ozon showcase с заголовком + витриной товаров"""
+    def _create_ozon_showcase(self, recommendations: List[Recommendation], parent_product: ProductInfo = None) -> List[Dict[str, Any]]:
+        """Создание Ozon showcase с заголовком + витриной товаров + карусель"""
+        
+        # Определяем пол товара из родительского товара для выбора правильного изображения
+        gender_specific_image = "https://cdn1.ozone.ru/s3/multimedia-1-e/7697739650.jpg"  # По умолчанию для девочек
+        
+        # Используем пол родительского товара, если он доступен
+        if parent_product and parent_product.gender:
+            gender = parent_product.gender.lower()
+            if "мальчи" in gender:
+                gender_specific_image = "https://cdn1.ozone.ru/s3/multimedia-1-l/7697806689.jpg"
+        # Fallback на пол из первой рекомендации, если родительский товар недоступен
+        elif recommendations and recommendations[0].product_info.gender:
+            gender = recommendations[0].product_info.gender.lower()
+            if "мальчи" in gender:
+                gender_specific_image = "https://cdn1.ozone.ru/s3/multimedia-1-l/7697806689.jpg"
         
         # Заголовочный блок (баннер)
         header_block = {
@@ -1247,7 +1263,7 @@ class RichContentGenerator:
         }
         
         # Витрина товаров (используем настройки конфигурации)
-        max_items = self.config.max_recommendations if self.config else 6
+        max_items = self.config.max_recommendations if self.config else 8
         showcase_blocks = []
         
         for i, rec in enumerate(recommendations[:max_items]):
@@ -1285,7 +1301,90 @@ class RichContentGenerator:
             "blocks": showcase_blocks
         }
         
-        return [header_block, showcase_widget]
+        # Карусель с изображениями (предпоследнее изображение меняется в зависимости от пола)
+        carousel_blocks = [
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "https://cdn1.ozone.ru/s3/multimedia-1-9/7697739753.jpg",
+                    "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-9/7697739753.jpg",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            },
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "https://cdn1.ozone.ru/s3/multimedia-1-v/7697739775.jpg",
+                    "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-v/7697739775.jpg",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            },
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "https://cdn1.ozone.ru/s3/multimedia-1-s/7697739592.jpg",
+                    "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-s/7697739592.jpg",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            },
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "https://cdn1.ozone.ru/s3/multimedia-1-z/7697739599.jpg",
+                    "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-z/7697739599.jpg",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            },
+            {
+                "imgLink": "",
+                "img": {
+                    "src": gender_specific_image,
+                    "srcMobile": gender_specific_image,
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            },
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "https://cdn1.ozone.ru/s3/multimedia-1-y/7697739670.jpg",
+                    "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-y/7697739670.jpg",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full",
+                    "widthMobile": 1440,
+                    "heightMobile": 900
+                }
+            }
+        ]
+        
+        # Карусель изображений
+        carousel_widget = {
+            "widgetName": "raShowcase",
+            "type": "roll",
+            "blocks": carousel_blocks
+        }
+        
+        return [header_block, showcase_widget, carousel_widget]
     
     def _create_product_block(self, recommendation: Recommendation, index: int) -> Dict[str, Any]:
         """Создание блока товара для карусели"""
@@ -1501,6 +1600,26 @@ class RichContentProcessor:
         logger.info(f"🎯 Начинаем обработку товара: {oz_vendor_code}")
         
         try:
+            # Получаем информацию о родительском товаре
+            logger.info(f"📋 Получаем информацию о родительском товаре: {oz_vendor_code}")
+            step_start = time.time()
+            
+            source_product = self.recommendation_engine.data_collector.get_full_product_info(oz_vendor_code)
+            step_time = time.time() - step_start
+            logger.info(f"✅ Информация о родительском товаре получена за {step_time:.2f}с")
+            
+            if not source_product:
+                total_time = time.time() - start_time
+                logger.warning(f"❌ Родительский товар {oz_vendor_code} не найден (общее время: {total_time:.2f}с)")
+                return ProcessingResult(
+                    oz_vendor_code=oz_vendor_code,
+                    status=ProcessingStatus.NO_DATA,
+                    recommendations=[],
+                    rich_content_json=self.content_generator._create_empty_content(),
+                    error_message="Родительский товар не найден",
+                    processing_time=total_time
+                )
+            
             # Поиск рекомендаций
             logger.info(f"🔍 Поиск рекомендаций для товара: {oz_vendor_code}")
             step_start = time.time()
@@ -1540,7 +1659,11 @@ class RichContentProcessor:
             logger.info(f"📝 Генерация Rich Content JSON для {len(recommendations)} рекомендаций")
             step_start = time.time()
             
-            rich_content_json = self.content_generator.generate_rich_content_json(recommendations)
+            rich_content_json = self.content_generator.generate_rich_content_json(
+                recommendations, 
+                template_type="ozon_showcase", 
+                parent_product=source_product
+            )
             step_time = time.time() - step_start
             logger.info(f"✅ Rich Content JSON сгенерирован за {step_time:.2f}с")
             
@@ -1584,6 +1707,243 @@ class RichContentProcessor:
                 processing_time=total_time
             )
     
+    def process_batch_optimized(
+        self, 
+        oz_vendor_codes: List[str], 
+        progress_callback: Callable[[int, int, str], None] = None,
+        batch_size: int = 50
+    ) -> BatchResult:
+        """
+        Оптимизированная пакетная обработка списка товаров с batch-обогащением punta данными
+        
+        Args:
+            oz_vendor_codes: Список артикулов для обработки
+            progress_callback: Callback функция для отслеживания прогресса
+            batch_size: Размер батча для обработки (по умолчанию 50)
+            
+        Returns:
+            Результат пакетной обработки
+        """
+        results = []
+        total_items = len(oz_vendor_codes)
+        
+        logger.info(f"🚀 Начинаем ОПТИМИЗИРОВАННУЮ пакетную обработку {total_items} товаров (batch_size={batch_size})")
+        start_time = time.time()
+        
+        # Обрабатываем товары батчами
+        for batch_start in range(0, total_items, batch_size):
+            batch_end = min(batch_start + batch_size, total_items)
+            batch_codes = oz_vendor_codes[batch_start:batch_end]
+            
+            logger.info(f"📦 Обработка батча {batch_start//batch_size + 1}: товары {batch_start+1}-{batch_end}")
+            batch_results = self._process_batch_chunk(batch_codes, progress_callback, batch_start, total_items)
+            results.extend(batch_results)
+        
+        total_time = time.time() - start_time
+        logger.info(f"✅ ОПТИМИЗИРОВАННАЯ пакетная обработка завершена за {total_time:.1f}с")
+        
+        # Финальный прогресс
+        if progress_callback:
+            progress_callback(total_items, total_items, "Обработка завершена")
+        
+        batch_result = BatchResult(
+            total_items=total_items,
+            processed_items=results
+        )
+        
+        logger.info(f"📊 Статистика: {batch_result.stats}")
+        return batch_result
+    
+    def _process_batch_chunk(
+        self, 
+        oz_vendor_codes: List[str], 
+        progress_callback: Callable[[int, int, str], None] = None,
+        offset: int = 0, 
+        total_items: int = 0
+    ) -> List[ProcessingResult]:
+        """
+        Обработка одного батча товаров с оптимизациями
+        
+        Args:
+            oz_vendor_codes: Список артикулов батча
+            progress_callback: Callback функция для отслеживания прогресса  
+            offset: Смещение для правильного отображения прогресса
+            total_items: Общее количество товаров
+            
+        Returns:
+            Список результатов обработки батча
+        """
+        batch_size = len(oz_vendor_codes)
+        logger.info(f"🔄 Обработка батча из {batch_size} товаров")
+        
+        # 1. Получаем информацию о всех товарах батча
+        logger.info(f"📋 Получение информации о {batch_size} товарах...")
+        step_start = time.time()
+        
+        source_products = {}
+        for i, vendor_code in enumerate(oz_vendor_codes):
+            if progress_callback:
+                progress_callback(offset + i + 1, total_items, f"Загружаем {vendor_code}")
+            
+            product_info = self.recommendation_engine.data_collector.get_full_product_info(vendor_code)
+            if product_info:
+                source_products[vendor_code] = product_info
+            else:
+                logger.warning(f"⚠️ Товар {vendor_code} не найден")
+        
+        step_time = time.time() - step_start
+        logger.info(f"✅ Информация о товарах получена за {step_time:.2f}с, успешно: {len(source_products)}/{batch_size}")
+        
+        # 2. Группируем товары по типу/полу/бренду для оптимизации поиска кандидатов
+        logger.info(f"📊 Группировка товаров по критериям поиска...")
+        groups = {}
+        for vendor_code, product in source_products.items():
+            key = (product.type, product.gender, product.oz_brand)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append((vendor_code, product))
+        
+        logger.info(f"📊 Создано {len(groups)} групп для поиска кандидатов")
+        
+        # 3. Для каждой группы ищем кандидатов и обрабатываем товары
+        batch_results = []
+        processed_count = 0
+        
+        for group_key, group_products in groups.items():
+            type_name, gender, brand = group_key
+            logger.info(f"🔍 Обработка группы: {type_name}/{gender}/{brand} ({len(group_products)} товаров)")
+            
+            # Ищем кандидатов для группы (один раз на группу)
+            if group_products:
+                sample_product = group_products[0][1]  # Берем первый товар как образец
+                candidates = self.recommendation_engine.data_collector.find_similar_products_candidates(sample_product)
+                logger.info(f"📊 Найдено {len(candidates)} кандидатов для группы {type_name}/{gender}/{brand}")
+                
+                # Пакетное обогащение кандидатов punta данными (один раз для всей группы)
+                if candidates:
+                    logger.info(f"🔗 Пакетное обогащение {len(candidates)} кандидатов punta данными")
+                    enriched_candidates = self.recommendation_engine.data_collector.enrich_with_punta_data(candidates)
+                else:
+                    enriched_candidates = []
+                
+                # Обрабатываем каждый товар группы
+                for vendor_code, source_product in group_products:
+                    try:
+                        processed_count += 1
+                        if progress_callback:
+                            progress_callback(offset + processed_count, total_items, f"Обрабатываем {vendor_code}")
+                        
+                        # Ищем рекомендации среди уже обогащенных кандидатов
+                        recommendations = self._find_recommendations_from_candidates(source_product, enriched_candidates)
+                        
+                        if len(recommendations) < self.config.min_recommendations:
+                            result = ProcessingResult(
+                                oz_vendor_code=vendor_code,
+                                status=ProcessingStatus.INSUFFICIENT_RECOMMENDATIONS,
+                                recommendations=recommendations,
+                                rich_content_json=self.content_generator._create_empty_content(),
+                                error_message=f"Недостаточно рекомендаций: {len(recommendations)} < {self.config.min_recommendations}",
+                                processing_time=0.0
+                            )
+                        else:
+                            # Генерация Rich Content JSON
+                            rich_content_json = self.content_generator.generate_rich_content_json(
+                                recommendations, 
+                                template_type="ozon_showcase", 
+                                parent_product=source_product
+                            )
+                            
+                            result = ProcessingResult(
+                                oz_vendor_code=vendor_code,
+                                status=ProcessingStatus.SUCCESS,
+                                recommendations=recommendations,
+                                rich_content_json=rich_content_json,
+                                processing_time=0.0
+                            )
+                        
+                        batch_results.append(result)
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при обработке {vendor_code}: {e}")
+                        error_result = ProcessingResult(
+                            oz_vendor_code=vendor_code,
+                            status=ProcessingStatus.ERROR,
+                            recommendations=[],
+                            error_message=str(e),
+                            processing_time=0.0
+                        )
+                        batch_results.append(error_result)
+        
+        return batch_results
+    
+    def _find_recommendations_from_candidates(self, source_product: ProductInfo, candidates: List[ProductInfo]) -> List[Recommendation]:
+        """
+        Поиск рекомендаций из уже обогащенного списка кандидатов
+        
+        Args:
+            source_product: Исходный товар
+            candidates: Список уже обогащенных кандидатов
+            
+        Returns:
+            Список рекомендаций
+        """
+        recommendations = []
+        
+        for candidate in candidates:
+            # Исключаем сам товар
+            if candidate.oz_vendor_code == source_product.oz_vendor_code:
+                continue
+                
+            # Вычисляем полный score
+            score = self.recommendation_engine.calculate_similarity_score(source_product, candidate)
+            
+            # Фильтруем по минимальному порогу
+            if score >= self.config.min_score_threshold:
+                match_details = self.recommendation_engine.get_match_details(source_product, candidate)
+                
+                recommendation = Recommendation(
+                    product_info=candidate,
+                    score=score,
+                    match_details=match_details
+                )
+                recommendations.append(recommendation)
+        
+        # Сортируем по score и ограничиваем количество
+        recommendations.sort(key=lambda r: r.score, reverse=True)
+        return recommendations[:self.config.max_recommendations]
+    
+    def save_rich_content_to_database(self, result: ProcessingResult) -> bool:
+        """
+        Сохранение Rich Content JSON в базу данных
+        
+        Args:
+            result: Результат обработки товара
+            
+        Returns:
+            True если сохранение успешно, False в случае ошибки
+        """
+        if not result.success or not result.rich_content_json:
+            logger.warning(f"Попытка сохранить неуспешный результат или пустой JSON для {result.oz_vendor_code}")
+            return False
+        
+        try:
+            # Обновляем поле rich_content_json в таблице oz_category_products
+            update_query = """
+            UPDATE oz_category_products 
+            SET rich_content_json = ?
+            WHERE oz_vendor_code = ?
+            """
+            
+            self.db_conn.execute(update_query, [result.rich_content_json, result.oz_vendor_code])
+            self.db_conn.commit()
+            
+            logger.info(f"✅ Rich Content JSON сохранен в БД для товара {result.oz_vendor_code}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения Rich Content JSON для {result.oz_vendor_code}: {e}")
+            return False
+
     def process_batch(
         self, 
         oz_vendor_codes: List[str], 

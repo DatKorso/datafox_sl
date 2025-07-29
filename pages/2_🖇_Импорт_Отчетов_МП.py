@@ -48,6 +48,13 @@ else:
     # Check if schema creation was successful
     if not create_tables_from_schema(db_conn):
         st.warning("Ошибка при создании/проверке таблиц в БД. Импорт может работать некорректно.")
+    
+    # Check if database migration is needed
+    from utils.db_migration import auto_migrate_if_needed
+    if not auto_migrate_if_needed(db_conn):
+        st.warning("⚠️ Требуется выполнить миграцию базы данных перед импортом.")
+        st.info("Выполните миграцию выше, затем обновите страницу для продолжения импорта.")
+        st.stop()
 
 # --- Marketplace and Report Selection ---
 st.sidebar.title("Выбор маркетплейса")
@@ -227,9 +234,40 @@ else:
                                 # However, for CSV, skiprows parameter is more direct if needed.
                                 # For now, assuming skip_rows_after_header is excel-specific logic in this context.
                             elif schema_for_selected_report.get("file_type") == "xlsx":
-                                current_df = pd.read_excel(data_source_path, engine='openpyxl', **pd_read_params)
+                                # Add safety check for large integers in Excel files
+                                safe_read_params = pd_read_params.copy()
+                                
+                                # If no dtype specified, add default string types for known problematic columns
+                                if 'dtype' not in safe_read_params:
+                                    safe_read_params['dtype'] = {}
+                                
+                                # Add string types for columns that might contain large integers
+                                if selected_report_key == "oz_barcodes":
+                                    safe_read_params['dtype'].update({
+                                        'Артикул': 'str',
+                                        'Ozon Product ID': 'str',
+                                        'Штрихкод': 'str'
+                                    })
+                                elif "oz_" in selected_report_key:
+                                    # For other Ozon tables, protect SKU and Product ID columns
+                                    safe_read_params['dtype'].update({
+                                        'OZON id': 'str',
+                                        'SKU': 'str',
+                                        'Ozon Product ID': 'str'
+                                    })
+                                elif "wb_" in selected_report_key:
+                                    # For Wildberries tables, protect SKU columns
+                                    safe_read_params['dtype'].update({
+                                        'Артикул WB': 'str'
+                                    })
+                                
+                                st.info(f"📖 Чтение файла с защитой от больших чисел: {os.path.basename(data_source_path)}")
+                                current_df = pd.read_excel(data_source_path, engine='openpyxl', **safe_read_params)
+                                
                                 if skip_rows_after_header_count > 0:
                                     current_df = current_df.iloc[skip_rows_after_header_count:].reset_index(drop=True)
+                                    
+                                st.success(f"✅ Файл успешно прочитан: {len(current_df)} строк")
                             else:
                                 st.error(f"Неподдерживаемый тип файла для чтения: {schema_for_selected_report.get('file_type')}")
                                 current_df = None # Ensure it's None
@@ -239,6 +277,13 @@ else:
                             st.error(f"Файл не найден по указанному пути: {data_source_path}")
                         except Exception as e_read:
                             st.error(f"Ошибка при чтении файла {os.path.basename(data_source_path)}: {e_read}")
+                            st.error(f"Подробности ошибки: {str(e_read)}")
+                            # Try to provide helpful suggestions
+                            if "Value out of range" in str(e_read) or "overflow" in str(e_read).lower():
+                                st.warning("💡 Возможная причина: файл содержит очень большие числа. Попробуйте:")
+                                st.write("1. Убедитесь, что в схеме настроены правильные типы данных")
+                                st.write("2. Проверьте, что все SKU и Product ID колонки читаются как строки")
+                                st.write("3. Обратитесь к документации по BIGINT миграции")
 
                     else: # Single file upload (or list if accept_multiple_files was True)
                         files_to_process = uploaded_files
@@ -253,15 +298,53 @@ else:
                                             current_df = pd.read_csv(uploaded_file_obj, **pd_read_params)
                                             # Similar to above, skip_rows_after_header is assumed excel-specific here
                                         elif schema_for_selected_report.get("file_type") == "xlsx":
-                                            current_df = pd.read_excel(uploaded_file_obj, engine='openpyxl', **pd_read_params)
+                                            # Add safety check for large integers in uploaded Excel files
+                                            safe_read_params = pd_read_params.copy()
+                                            
+                                            # If no dtype specified, add default string types for known problematic columns
+                                            if 'dtype' not in safe_read_params:
+                                                safe_read_params['dtype'] = {}
+                                            
+                                            # Add string types for columns that might contain large integers
+                                            if selected_report_key == "oz_barcodes":
+                                                safe_read_params['dtype'].update({
+                                                    'Артикул': 'str',
+                                                    'Ozon Product ID': 'str',
+                                                    'Штрихкод': 'str'
+                                                })
+                                            elif "oz_" in selected_report_key:
+                                                # For other Ozon tables, protect SKU and Product ID columns
+                                                safe_read_params['dtype'].update({
+                                                    'OZON id': 'str',
+                                                    'SKU': 'str',
+                                                    'Ozon Product ID': 'str'
+                                                })
+                                            elif "wb_" in selected_report_key:
+                                                # For Wildberries tables, protect SKU columns
+                                                safe_read_params['dtype'].update({
+                                                    'Артикул WB': 'str'
+                                                })
+                                            
+                                            st.info(f"📖 Чтение загруженного файла с защитой от больших чисел: {uploaded_file_obj.name}")
+                                            current_df = pd.read_excel(uploaded_file_obj, engine='openpyxl', **safe_read_params)
+                                            
                                             if skip_rows_after_header_count > 0:
                                                 current_df = current_df.iloc[skip_rows_after_header_count:].reset_index(drop=True)
+                                                
+                                            st.success(f"✅ Файл успешно прочитан: {len(current_df)} строк")
                                         else: 
                                             st.error(f"Неподдерживаемый тип файла для чтения: {schema_for_selected_report.get('file_type')}")
                                             continue
                                         all_dfs.append(current_df)
                                     except Exception as e_read:
                                         st.error(f"Ошибка при чтении файла {uploaded_file_obj.name}: {e_read}")
+                                        st.error(f"Подробности ошибки: {str(e_read)}")
+                                        # Try to provide helpful suggestions
+                                        if "Value out of range" in str(e_read) or "overflow" in str(e_read).lower():
+                                            st.warning("💡 Возможная причина: файл содержит очень большие числа. Попробуйте:")
+                                            st.write("1. Убедитесь, что в схеме настроены правильные типы данных")
+                                            st.write("2. Проверьте, что все SKU и Product ID колонки читаются как строки")
+                                            st.write("3. Обратитесь к документации по BIGINT миграции")
                         else: # This case should be caught by proceed_with_import logic, but as a fallback
                             st.warning("Файлы не были загружены.")
                     
