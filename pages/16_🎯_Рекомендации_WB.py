@@ -38,6 +38,7 @@ from utils.wb_recommendations import (
     WBRecommendationProcessor, WBScoringConfig, WBProcessingStatus,
     WBProcessingResult, WBBatchResult
 )
+from utils.manual_recommendations_manager import ManualRecommendationsManager
 
 # Конфигурация страницы
 st.set_page_config(
@@ -101,6 +102,10 @@ if 'wb_batch_result' not in st.session_state:
 if 'wb_skus_input' not in st.session_state:
     st.session_state.wb_skus_input = ""
     logger.info("📝 Инициализация wb_skus_input")
+
+if 'manual_recommendations_manager' not in st.session_state:
+    st.session_state.manual_recommendations_manager = None
+    logger.info("📝 Инициализация manual_recommendations_manager")
 
 # --- Функции для UI ---
 def render_scoring_config_ui() -> WBScoringConfig:
@@ -198,6 +203,147 @@ def parse_wb_skus(input_text: str) -> List[str]:
     
     logger.info(f"✅ Найдено {len(cleaned_skus)} валидных WB SKU")
     return cleaned_skus
+
+def render_manual_recommendations_ui() -> Optional[ManualRecommendationsManager]:
+    """Отрисовка UI для ручных рекомендаций"""
+    logger.info("📋 Отрисовка UI для ручных рекомендаций")
+    st.subheader("🖐️ Ручные рекомендации (опционально)")
+    
+    with st.expander("📎 Загрузка файла с ручными рекомендациями", expanded=False):
+        st.markdown("""
+        **Формат файла (CSV или Excel):**
+        ```
+        target_wb_sku,position_1,recommended_sku_1,position_2,recommended_sku_2,...
+        123123,2,321321,5,321456
+        456456,1,789789,3,111222,7,333444
+        ```
+        
+        **Правила:**
+        - Первый столбец: WB SKU товара, для которого нужны рекомендации
+        - Остальные столбцы: пары (позиция, рекомендуемый WB SKU)
+        - Позиции начинаются с 1
+        - Можно указать разное количество рекомендаций для каждого товара
+        - Поддерживаются форматы: CSV и Excel (.xlsx)
+        """)
+        
+        # Загрузка файла
+        manual_recs_file = st.file_uploader(
+            "Выберите файл с ручными рекомендациями:",
+            type=['csv', 'xlsx'],
+            help="CSV или Excel файл с ручными рекомендациями в указанном формате"
+        )
+        
+        # Кнопки управления
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("📄 Скачать пример CSV", use_container_width=True):
+                # Создаем пример CSV
+                manager = ManualRecommendationsManager()
+                example_csv = manager.generate_example_csv()
+                
+                st.download_button(
+                    label="📥 Скачать CSV",
+                    data=example_csv,
+                    file_name="manual_recommendations_example.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        with col2:
+            if st.button("📊 Скачать пример Excel", use_container_width=True):
+                # Создаем пример Excel
+                manager = ManualRecommendationsManager()
+                example_excel = manager.generate_example_excel()
+                
+                st.download_button(
+                    label="📥 Скачать Excel",
+                    data=example_excel,
+                    file_name="manual_recommendations_example.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        
+        with col3:
+            if st.button("🧹 Очистить ручные рекомендации", use_container_width=True):
+                st.session_state.manual_recommendations_manager = None
+                st.success("✅ Ручные рекомендации очищены")
+                st.rerun()
+        
+        with col4:
+            # Показываем статистику
+            if st.session_state.manual_recommendations_manager:
+                stats = st.session_state.manual_recommendations_manager.get_statistics()
+                st.metric("Загружено", f"{stats['total_targets']} товаров")
+        
+        # Обработка загруженного файла
+        if manual_recs_file is not None:
+            logger.info(f"📄 Пользователь загрузил файл: {manual_recs_file.name}")
+            
+            try:
+                # Создаем новый менеджер
+                manager = ManualRecommendationsManager()
+                
+                # Определяем тип файла и загружаем соответствующим методом
+                file_extension = manual_recs_file.name.lower().split('.')[-1]
+                
+                if file_extension == 'csv':
+                    logger.info(f"📄 Загрузка CSV файла: {manual_recs_file.name}")
+                    success = manager.load_from_csv_file(manual_recs_file)
+                elif file_extension == 'xlsx':
+                    logger.info(f"📊 Загрузка Excel файла: {manual_recs_file.name}")
+                    success = manager.load_from_excel_file(manual_recs_file)
+                else:
+                    st.error(f"❌ Неподдерживаемый формат файла: {file_extension}")
+                    logger.error(f"❌ Неподдерживаемый формат файла: {file_extension}")
+                    success = False
+                
+                if success:
+                    # Сохраняем в сессии
+                    st.session_state.manual_recommendations_manager = manager
+                    stats = manager.get_statistics()
+                    
+                    st.success(f"✅ Ручные рекомендации загружены из {file_extension.upper()} файла:")
+                    st.info(f"📊 Товаров: {stats['total_targets']}, Рекомендаций: {stats['total_recommendations']}")
+                    
+                    # Показываем превью
+                    if stats['total_targets'] > 0:
+                        st.subheader("📋 Превью загруженных данных:")
+                        
+                        preview_data = []
+                        target_skus = manager.get_all_target_skus()[:5]  # Первые 5
+                        
+                        for target_sku in target_skus:
+                            recommendations = manager.get_manual_recommendations(target_sku)
+                            rec_str = ", ".join([f"поз.{pos}: {sku}" for pos, sku in recommendations])
+                            preview_data.append({
+                                "Товар": target_sku,
+                                "Ручные рекомендации": rec_str
+                            })
+                        
+                        preview_df = pd.DataFrame(preview_data)
+                        st.dataframe(preview_df, use_container_width=True)
+                        
+                        if len(target_skus) < stats['total_targets']:
+                            st.info(f"Показаны первые {len(target_skus)} из {stats['total_targets']} товаров")
+                    
+                    logger.info(f"✅ Ручные рекомендации успешно загружены из {manual_recs_file.name}")
+                else:
+                    st.error("❌ Ошибка загрузки файла. Проверьте формат данных.")
+                    logger.error(f"❌ Ошибка загрузки файла {manual_recs_file.name}")
+                    
+            except Exception as e:
+                st.error(f"❌ Критическая ошибка при загрузке файла: {e}")
+                logger.error(f"❌ Критическая ошибка при загрузке файла: {e}")
+    
+    # Текущая статистика
+    if st.session_state.manual_recommendations_manager:
+        stats = st.session_state.manual_recommendations_manager.get_statistics()
+        st.info(f"📊 **Активные ручные рекомендации:** {stats['total_targets']} товаров, {stats['total_recommendations']} рекомендаций")
+    else:
+        st.info("📋 Ручные рекомендации не загружены. Будет использоваться только алгоритм.")
+    
+    return st.session_state.manual_recommendations_manager
 
 def render_wb_skus_input() -> List[str]:
     """Отрисовка UI для ввода WB SKU"""
@@ -368,10 +514,14 @@ def create_recommendations_table(batch_result: WBBatchResult) -> pd.DataFrame:
             
             # Добавляем каждую рекомендацию как отдельную строку
             for i, recommendation in enumerate(result.recommendations, 1):
+                # Определяем номер рекомендации с учетом ручных позиций
+                recommendation_number = recommendation.manual_position if recommendation.is_manual else i
+                
                 table_data.append({
                     "Исходный WB SKU": wb_sku,
-                    "Рекомендация №": i,
+                    "Рекомендация №": recommendation_number,
                     "Рекомендуемый WB SKU": recommendation.product_info.wb_sku,
+                    "Тип рекомендации": "🖐️ Ручная" if recommendation.is_manual else "🤖 Алгоритмическая",
                     "Score": round(recommendation.score, 1),
                     "Бренд": recommendation.product_info.wb_brand,
                     "Категория": recommendation.product_info.wb_category,
@@ -412,7 +562,9 @@ if st.button("🔄 Обновить процессор"):
     logger.info("🔄 Обновление процессора...")
     try:
         with st.spinner("🔄 Создание процессора..."):
-            st.session_state.wb_recommendation_processor = WBRecommendationProcessor(conn, config)
+            st.session_state.wb_recommendation_processor = WBRecommendationProcessor(
+                conn, config, st.session_state.manual_recommendations_manager
+            )
         logger.info("✅ Процессор обновлен")
         st.success("✅ Процессор обновлен!")
     except Exception as e:
@@ -424,7 +576,9 @@ if st.session_state.wb_recommendation_processor is None:
     logger.info("🔄 Создание процессора (первый раз)...")
     try:
         with st.spinner("🔄 Инициализация процессора..."):
-            st.session_state.wb_recommendation_processor = WBRecommendationProcessor(conn, config)
+            st.session_state.wb_recommendation_processor = WBRecommendationProcessor(
+                conn, config, st.session_state.manual_recommendations_manager
+            )
         logger.info("✅ Процессор создан")
     except Exception as e:
         logger.error(f"❌ Ошибка создания процессора: {e}")
@@ -434,6 +588,19 @@ if st.session_state.wb_recommendation_processor is None:
 processor = st.session_state.wb_recommendation_processor
 
 st.markdown("---")
+
+# Ручные рекомендации
+logger.info("🖐️ Отрисовка ручных рекомендаций")
+manual_manager = render_manual_recommendations_ui()
+
+# Обновляем процессор если изменились ручные рекомендации
+if st.session_state.wb_recommendation_processor is not None:
+    current_processor = st.session_state.wb_recommendation_processor
+    if current_processor.manual_manager != manual_manager:
+        logger.info("🔄 Обновление ManualRecommendationsManager в процессоре...")
+        current_processor.set_manual_recommendations_manager(manual_manager)
+
+st.markdown("---")  
 
 # Ввод WB SKU
 logger.info("📝 Отрисовка ввода WB SKU")

@@ -1,0 +1,171 @@
+--- a/utils/wb_recommendations.py
++++ b/utils/wb_recommendations.py
+@@ -522,6 +522,7 @@ class WBDataCollector:
+     def _get_ozon_characteristics(self, oz_vendor_codes: List[str]) -> List[Dict[str, Any]]:
+         """Получение характеристик из Ozon товаров по vendor_code"""
+         if not oz_vendor_codes:
++            logger.info("🔍 _get_ozon_characteristics: Пустой список vendor_codes")
+             return []
+         
+         try:
+@@ -538,9 +539,12 @@ class WBDataCollector:
+                 ocp.color,
+                 ocp.fastener_type
+             FROM oz_category_products ocp
+             WHERE ocp.oz_vendor_code IN ({placeholders})
+-            AND ocp.type IS NOT NULL
+-            AND ocp.gender IS NOT NULL
+-            AND ocp.oz_brand IS NOT NULL
++            """
++            # УБИРАЕМ ЖЕСТКИЕ ФИЛЬТРЫ - они исключают товары
++            # Старый код:
++            # AND ocp.type IS NOT NULL
++            # AND ocp.gender IS NOT NULL  
++            # AND ocp.oz_brand IS NOT NULL
+             """
+             
+             results_df = self.db_conn.execute(query, oz_vendor_codes).fetchdf()
+@@ -548,6 +552,12 @@ class WBDataCollector:
+             if results_df.empty:
++                logger.warning(f"⚠️ Не найдено характеристик в oz_category_products для {len(oz_vendor_codes)} vendor_codes")
++                logger.info(f"📊 Vendor codes: {oz_vendor_codes[:5]}...")  # Показываем первые 5
+                 return []
++            
++            results = results_df.to_dict('records')
++            complete_count = sum(1 for r in results if r.get('type') and r.get('gender') and r.get('oz_brand'))
++            logger.info(f"✅ Найдено {len(results)} записей (полных: {complete_count})")
+             
+-            return results_df.to_dict('records')
++            return results
+         
+         except Exception as e:
+             logger.error(f"❌ Ошибка получения Ozon характеристик: {e}")
+@@ -559,6 +569,7 @@ class WBDataCollector:
+             return product_info
+         
+         try:
++            logger.info(f"🔍 Обогащение Punta данными для WB {product_info.wb_sku}")
+             query = """
+             SELECT 
+                 material_short,
+@@ -579,6 +590,7 @@ class WBDataCollector:
+             result = self.db_conn.execute(query, [product_info.wb_sku, product_info.wb_brand]).fetchone()
+             
+             if result:
++                logger.info(f"✅ Найдены Punta данные для WB {product_info.wb_sku}")
+                 product_info.punta_material_short = result[0]
+                 product_info.punta_new_last = result[1]
+                 product_info.punta_mega_last = result[2]
+@@ -588,6 +600,8 @@ class WBDataCollector:
+                 product_info.punta_heel_up_type = result[6]
+                 product_info.punta_lacing_type = result[7]
+                 product_info.punta_nose_type = result[8]
++            else:
++                logger.info(f"⚠️ Punta данные не найдены для WB {product_info.wb_sku}")
+             
+             return product_info
+             
+@@ -985,8 +999,27 @@ class WBRecommendationEngine:
+                 return []
+             
+             # Проверяем качество обогащения
+-            if not source_product.has_enriched_data():
+-                logger.warning(f"⚠️ WB товар {wb_sku} не имеет достаточных обогащенных данных для поиска рекомендаций")
++            enrichment_quality = source_product.get_enrichment_score()
++            logger.info(f"📊 Качество обогащения: {enrichment_quality:.2f}")
++            
++            if not source_product.has_enriched_data():
++                logger.warning(f"⚠️ WB товар {wb_sku} не имеет полных обогащенных данных")
++                logger.info(f"📊 Состояние обогащения:")
++                logger.info(f"   enriched_type: {source_product.enriched_type}")
++                logger.info(f"   enriched_gender: {source_product.enriched_gender}")
++                logger.info(f"   enriched_brand: {source_product.enriched_brand}")
++                logger.info(f"   linked_oz_skus: {len(source_product.linked_oz_skus or [])}")
++                
++                # НОВЫЙ FALLBACK АЛГОРИТМ: поиск по базовым WB характеристикам
++                logger.info(f"🔄 Применяем fallback алгоритм поиска по базовым WB характеристикам...")
++                fallback_recommendations = self._find_recommendations_by_wb_characteristics(source_product)
++                
++                if fallback_recommendations:
++                    logger.info(f"✅ Fallback алгоритм нашел {len(fallback_recommendations)} рекомендаций")
++                    return fallback_recommendations
++                else:
++                    logger.warning(f"❌ Fallback алгоритм не нашел рекомендаций")
+                 return []
+             
+             logger.info(f"📊 Товар найден - тип: {source_product.get_effective_type()}, пол: {source_product.get_effective_gender()}, бренд: {source_product.get_effective_brand()}")
+@@ -1082,6 +1115,64 @@ class WBRecommendationEngine:
+         except Exception as e:
+             logger.error(f"❌ Критическая ошибка при поиске похожих товаров для WB {wb_sku}: {e}")
+             return []
++    
++    def _find_recommendations_by_wb_characteristics(self, source_product: WBProductInfo) -> List[WBRecommendation]:
++        """
++        FALLBACK алгоритм поиска рекомендаций по базовым WB характеристикам
++        Когда нет обогащенных данных из Ozon
++        """
++        logger.info(f"🔄 FALLBACK: Поиск по базовым WB характеристикам для {source_product.wb_sku}")
++        
++        try:
++            # Поиск похожих товаров по бренду и категории WB
++            query = """
++            SELECT DISTINCT wb.wb_sku
++            FROM wb_products wb
++            LEFT JOIN wb_prices wp ON wb.wb_sku = wp.wb_sku
++            WHERE wb.wb_brand = ?
++            AND wb.wb_category = ?
++            AND wb.wb_sku != ?
++            AND COALESCE(wp.wb_fbo_stock, wb.wb_fbo_stock, 0) > 0
++            ORDER BY COALESCE(wp.wb_fbo_stock, wb.wb_fbo_stock, 0) DESC
++            LIMIT ?
++            """
++            
++            candidates_data = self.db_conn.execute(query, [
++                source_product.wb_brand,
++                source_product.wb_category, 
++                source_product.wb_sku,
++                self.config.max_recommendations * 2  # Берем больше для фильтрации
++            ]).fetchall()
++            
++            logger.info(f"📊 FALLBACK: Найдено {len(candidates_data)} кандидатов по бренду+категории")
++            
++            if not candidates_data:
++                return []
++            
++            # Создаем рекомендации с базовым scoring
++            recommendations = []
++            for candidate_row in candidates_data:
++                candidate_sku = str(candidate_row[0])
++                
++                # Получаем информацию о кандидате
++                candidate_info = self.data_collector.get_wb_product_info(candidate_sku)
++                if not candidate_info:
++                    continue
++                
++                # Простой scoring для fallback
++                base_score = 50  # Базовый score для fallback
++                
++                # Бонус за совпадение размерной сетки
++                if (source_product.wb_sizes and candidate_info.wb_sizes and 
++                    set(source_product.wb_sizes) & set(candidate_info.wb_sizes)):
++                    base_score += 20
++                
++                recommendation = WBRecommendation(
++                    product_info=candidate_info,
++                    score=base_score,
++                    match_details=f"Fallback поиск: тот же бренд ({source_product.wb_brand}) и категория ({source_product.wb_category})"
++                )
++                recommendations.append(recommendation)
++            
++            # Ограничиваем количество и сортируем
++            recommendations.sort(key=lambda r: r.score, reverse=True)
++            final_recommendations = recommendations[:self.config.max_recommendations]
++            
++            logger.info(f"✅ FALLBACK: Создано {len(final_recommendations)} рекомендаций")
++            return final_recommendations
++            
++        except Exception as e:
++            logger.error(f"❌ Ошибка FALLBACK алгоритма: {e}")
++            return []
+ 
+     def calculate_similarity_score(self, source: WBProductInfo, candidate: WBProductInfo) -> float:

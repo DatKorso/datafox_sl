@@ -25,6 +25,7 @@ import pandas as pd
 # Импорт модулей для связывания
 from .cross_marketplace_linker import CrossMarketplaceLinker
 from .data_cleaning import DataCleaningUtils
+from .manual_recommendations_manager import ManualRecommendationsManager
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -207,6 +208,8 @@ class WBRecommendation:
     score: float
     match_details: str
     processing_status: WBProcessingStatus = WBProcessingStatus.SUCCESS
+    is_manual: bool = False  # Флаг ручной рекомендации
+    manual_position: Optional[int] = None  # Требуемая позиция для ручной рекомендации
     
     def to_dict(self) -> Dict[str, Any]:
         """Конвертация в словарь для сериализации"""
@@ -224,7 +227,9 @@ class WBRecommendation:
             'enriched_color': self.product_info.enriched_color,
             'match_details': self.match_details,
             'status': self.processing_status.value,
-            'enrichment_score': self.product_info.get_enrichment_score()
+            'enrichment_score': self.product_info.get_enrichment_score(),
+            'is_manual': self.is_manual,
+            'manual_position': self.manual_position
         }
 
 
@@ -483,18 +488,20 @@ class WBDataCollector:
     def _enrich_with_ozon_data(self, product_info: WBProductInfo) -> WBProductInfo:
         """Обогащение данными из связанных Ozon товаров"""
         try:
-            # Находим связанные Ozon товары
-            linked_oz = self.linker.link_wb_to_oz([product_info.wb_sku])
+            logger.info(f"🔍 Начинаем обогащение Ozon данными для WB {product_info.wb_sku}")
             
-            if not linked_oz or product_info.wb_sku not in linked_oz:
+            # ИСПРАВЛЕННЫЙ АЛГОРИТМ: Ищем oz_vendor_codes напрямую через штрихкоды
+            oz_vendor_codes = self._get_ozon_vendor_codes_direct(product_info)
+            
+            if not oz_vendor_codes:
                 logger.info(f"⚠️ Нет связанных Ozon товаров для WB SKU {product_info.wb_sku}")
                 return product_info
             
-            oz_skus = linked_oz[product_info.wb_sku]
-            product_info.linked_oz_skus = oz_skus
+            product_info.linked_oz_vendor_codes = oz_vendor_codes
+            logger.info(f"✅ Найдено {len(oz_vendor_codes)} связанных Ozon vendor_codes: {oz_vendor_codes[:3]}...")
             
-            # Получаем характеристики из Ozon (oz_skus здесь на самом деле vendor_codes)
-            oz_characteristics = self._get_ozon_characteristics(oz_skus)
+            # Получаем характеристики из Ozon
+            oz_characteristics = self._get_ozon_characteristics(oz_vendor_codes)
             
             if oz_characteristics:
                 # Обогащаем характеристики (используем стратегию "наиболее популярные")
@@ -507,11 +514,14 @@ class WBDataCollector:
                 product_info.enriched_material = None
                 product_info.enriched_fastener_type = self._get_most_common_value(oz_characteristics, 'fastener_type')
                 
-                # Сохраняем связанные vendor codes
-                product_info.linked_oz_vendor_codes = [item['oz_vendor_code'] for item in oz_characteristics]
-                product_info.enrichment_source = "ozon"
+                product_info.enrichment_source = "ozon_direct"
                 
-                logger.info(f"✅ Обогащение Ozon данными для WB {product_info.wb_sku}: {len(oz_characteristics)} товаров")
+                logger.info(f"✅ Обогащение Ozon данными завершено для WB {product_info.wb_sku}")
+                logger.info(f"   enriched_type: {product_info.enriched_type}")
+                logger.info(f"   enriched_gender: {product_info.enriched_gender}")  
+                logger.info(f"   enriched_brand: {product_info.enriched_brand}")
+            else:
+                logger.warning(f"⚠️ Нет характеристик в oz_category_products для найденных vendor_codes")
             
             return product_info
             
@@ -519,9 +529,48 @@ class WBDataCollector:
             logger.error(f"❌ Ошибка обогащения Ozon данными для WB {product_info.wb_sku}: {e}")
             return product_info
     
+    def _get_ozon_vendor_codes_direct(self, product_info: WBProductInfo) -> List[str]:
+        """
+        ИСПРАВЛЕННЫЙ МЕТОД: Получение oz_vendor_codes напрямую через штрихкоды WB товара
+        Минуя CrossMarketplaceLinker, который возвращает неправильные данные
+        """
+        try:
+            if not product_info.wb_barcodes:
+                logger.info(f"⚠️ Нет штрихкодов для WB {product_info.wb_sku}")
+                return []
+            
+            # Разбираем штрихкоды WB товара
+            wb_barcodes = [bc.strip() for bc in product_info.wb_barcodes.split(';') if bc.strip()]
+            logger.info(f"📊 Проверяем {len(wb_barcodes)} штрихкодов WB товара")
+            
+            # Ищем oz_vendor_codes напрямую в oz_barcodes
+            all_oz_vendor_codes = []
+            for barcode in wb_barcodes:
+                query = """
+                SELECT DISTINCT oz_vendor_code 
+                FROM oz_barcodes 
+                WHERE oz_barcode = ? 
+                AND oz_vendor_code IS NOT NULL
+                AND TRIM(oz_vendor_code) != ''
+                """
+                
+                results = self.db_conn.execute(query, [barcode]).fetchall()
+                for result in results:
+                    oz_vendor_code = result[0]
+                    if oz_vendor_code not in all_oz_vendor_codes:
+                        all_oz_vendor_codes.append(oz_vendor_code)
+            
+            logger.info(f"✅ Найдено {len(all_oz_vendor_codes)} уникальных oz_vendor_codes через прямой поиск")
+            return all_oz_vendor_codes
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка прямого поиска oz_vendor_codes: {e}")
+            return []
+    
     def _get_ozon_characteristics(self, oz_vendor_codes: List[str]) -> List[Dict[str, Any]]:
         """Получение характеристик из Ozon товаров по vendor_code"""
         if not oz_vendor_codes:
+            logger.info("🔍 _get_ozon_characteristics: Пустой список vendor_codes")
             return []
         
         try:
@@ -539,17 +588,22 @@ class WBDataCollector:
                 ocp.fastener_type
             FROM oz_category_products ocp
             WHERE ocp.oz_vendor_code IN ({placeholders})
-            AND ocp.type IS NOT NULL
-            AND ocp.gender IS NOT NULL
-            AND ocp.oz_brand IS NOT NULL
             """
+            # УБИРАЕМ ЖЕСТКИЕ ФИЛЬТРЫ - они исключают товары с неполными данными
+            # Теперь получаем ВСЕ доступные характеристики, даже частичные
             
             results_df = self.db_conn.execute(query, oz_vendor_codes).fetchdf()
             
             if results_df.empty:
+                logger.warning(f"⚠️ Не найдено характеристик в oz_category_products для {len(oz_vendor_codes)} vendor_codes")
+                logger.info(f"📊 Vendor codes: {oz_vendor_codes[:5]}...")  # Показываем первые 5
                 return []
             
-            return results_df.to_dict('records')
+            results = results_df.to_dict('records')
+            complete_count = sum(1 for r in results if r.get('type') and r.get('gender') and r.get('oz_brand'))
+            logger.info(f"✅ Найдено {len(results)} записей характеристик (полных: {complete_count}, частичных: {len(results) - complete_count})")
+            
+            return results
             
         except Exception as e:
             logger.error(f"❌ Ошибка получения характеристик Ozon: {e}")
@@ -823,20 +877,20 @@ class WBDataCollector:
         # ЭТАП 2: Пакетное обогащение Ozon данными 
         ozon_start = time.time()
         
-        # Собираем все wb_sku для связывания с Ozon
+        # 🚀 ИСПРАВЛЕНИЕ: Используем прямой поиск по штрихкодам вместо проблемного CrossMarketplaceLinker
         all_wb_skus = [c.wb_sku for c in candidates]
-        linked_data = self.linker.link_wb_to_oz(all_wb_skus)
+        linked_data = self._batch_get_ozon_vendor_codes_direct(all_wb_skus)
         
-        # Собираем все уникальные oz_skus
-        all_oz_skus = []
+        # Собираем все уникальные oz_vendor_codes (не oz_skus!)
+        all_oz_vendor_codes = []
         for wb_sku in linked_data:
-            all_oz_skus.extend(linked_data[wb_sku])
-        unique_oz_skus = list(set(all_oz_skus))
+            all_oz_vendor_codes.extend(linked_data[wb_sku])
+        unique_oz_vendor_codes = list(set(all_oz_vendor_codes))
         
         # Получаем характеристики одним запросом
         ozon_characteristics = {}
-        if unique_oz_skus:
-            characteristics_list = self._get_ozon_characteristics(unique_oz_skus)
+        if unique_oz_vendor_codes:
+            characteristics_list = self._get_ozon_characteristics(unique_oz_vendor_codes)
             
             # Группируем по oz_vendor_code для быстрого поиска
             for char in characteristics_list:
@@ -873,18 +927,14 @@ class WBDataCollector:
             
             # Применяем Ozon данные
             if wb_sku in linked_data:
-                oz_skus = linked_data[wb_sku]
-                enriched_candidate.linked_oz_skus = oz_skus
+                oz_vendor_codes = linked_data[wb_sku]
+                enriched_candidate.linked_oz_vendor_codes = oz_vendor_codes
                 
                 # Собираем характеристики из связанных товаров
                 all_characteristics = []
-                for oz_sku in oz_skus:
-                    # Ищем vendor_code по oz_sku в нашем кэше
-                    for vendor_code, chars in ozon_characteristics.items():
-                        for char in chars:
-                            if str(char.get('oz_vendor_code')) == str(vendor_code):
-                                all_characteristics.extend(chars)
-                                break
+                for oz_vendor_code in oz_vendor_codes:
+                    if oz_vendor_code in ozon_characteristics:
+                        all_characteristics.extend(ozon_characteristics[oz_vendor_code])
                 
                 if all_characteristics:
                     # Применяем наиболее популярные значения
@@ -895,8 +945,6 @@ class WBDataCollector:
                     enriched_candidate.enriched_color = self._get_most_common_value(all_characteristics, 'color')
                     enriched_candidate.enriched_fastener_type = self._get_most_common_value(all_characteristics, 'fastener_type')
                     
-                    # Сохраняем связанные vendor codes
-                    enriched_candidate.linked_oz_vendor_codes = [item['oz_vendor_code'] for item in all_characteristics]
                     enriched_candidate.enrichment_source = "ozon"
             
             enriched_candidates.append(enriched_candidate)
@@ -909,6 +957,78 @@ class WBDataCollector:
         logger.info(f"🎉 Пакетное обогащение завершено за {total_time:.2f}с (было бы ~{len(candidates) * 0.0086:.1f}с)")
         
         return enriched_candidates
+    
+    def _batch_get_ozon_vendor_codes_direct(self, wb_skus: List[str]) -> Dict[str, List[str]]:
+        """
+        🚀 ПАКЕТНАЯ версия прямого поиска oz_vendor_codes по штрихкодам WB товаров
+        Обходит проблемный CrossMarketplaceLinker для пакетной обработки кандидатов
+        """
+        if not wb_skus:
+            return {}
+        
+        try:
+            # Получаем все штрихкоды для всех WB товаров одним запросом
+            wb_skus_str = ", ".join([f"'{sku}'" for sku in wb_skus])
+            barcodes_query = f"""
+            SELECT wb_sku, wb_barcodes
+            FROM wb_products 
+            WHERE wb_sku IN ({wb_skus_str})
+            AND wb_barcodes IS NOT NULL 
+            AND TRIM(wb_barcodes) != ''
+            """
+            
+            barcodes_results = self.db_conn.execute(barcodes_query).fetchall()
+            
+            # Собираем все уникальные штрихкоды
+            all_barcodes = set()
+            wb_to_barcodes = {}
+            
+            for wb_sku, wb_barcodes in barcodes_results:
+                barcodes = [bc.strip() for bc in wb_barcodes.split(';') if bc.strip()]
+                wb_to_barcodes[wb_sku] = barcodes
+                all_barcodes.update(barcodes)
+            
+            if not all_barcodes:
+                return {}
+            
+            # Получаем все oz_vendor_codes для всех штрихкодов одним запросом
+            barcodes_str = ", ".join([f"'{bc}'" for bc in all_barcodes])
+            oz_query = f"""
+            SELECT DISTINCT oz_barcode, oz_vendor_code
+            FROM oz_barcodes 
+            WHERE oz_barcode IN ({barcodes_str})
+            AND oz_vendor_code IS NOT NULL
+            """
+            
+            oz_results = self.db_conn.execute(oz_query).fetchall()
+            
+            # Создаем mapping: barcode -> list of oz_vendor_codes
+            barcode_to_oz = {}
+            for oz_barcode, oz_vendor_code in oz_results:
+                if oz_barcode not in barcode_to_oz:
+                    barcode_to_oz[oz_barcode] = []
+                barcode_to_oz[oz_barcode].append(oz_vendor_code)
+            
+            # Связываем WB товары с oz_vendor_codes
+            linked_data = {}
+            for wb_sku, barcodes in wb_to_barcodes.items():
+                oz_vendor_codes = []
+                for barcode in barcodes:
+                    if barcode in barcode_to_oz:
+                        oz_vendor_codes.extend(barcode_to_oz[barcode])
+                
+                if oz_vendor_codes:
+                    # Убираем дубликаты и сортируем по приоритету
+                    unique_codes = list(set(oz_vendor_codes))
+                    # 🚀 ИСПРАВЛЕНИЕ: Обеспечиваем консистентность типов - всегда строки
+                    linked_data[str(wb_sku)] = unique_codes
+            
+            logger.info(f"📊 Пакетный поиск oz_vendor_codes: {len(linked_data)} WB товаров связано с Ozon")
+            return linked_data
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка пакетного поиска oz_vendor_codes: {e}")
+            return {}
     
     def _batch_get_punta_data(self, wb_skus: List[str]) -> Dict[str, Dict[str, Any]]:
         """Пакетное получение данных из punta_table"""
@@ -958,10 +1078,12 @@ class WBDataCollector:
 class WBRecommendationEngine:
     """Основной движок рекомендаций WB товаров"""
     
-    def __init__(self, db_conn, config: WBScoringConfig):
+    def __init__(self, db_conn, config: WBScoringConfig, 
+                 manual_recommendations_manager: Optional[ManualRecommendationsManager] = None):
         self.db_conn = db_conn
         self.config = config
         self.data_collector = WBDataCollector(db_conn)
+        self.manual_manager = manual_recommendations_manager
     
     def find_similar_wb_products(self, wb_sku: str) -> List[WBRecommendation]:
         """
@@ -989,8 +1111,33 @@ class WBRecommendationEngine:
                 return []
             
             # Проверяем качество обогащения
+            enrichment_quality = source_product.get_enrichment_score()
+            logger.info(f"📊 Качество обогащения: {enrichment_quality:.2f}")
+            
             if not source_product.has_enriched_data():
-                logger.warning(f"⚠️ WB товар {wb_sku} не имеет достаточных обогащенных данных для поиска рекомендаций")
+                logger.warning(f"⚠️ WB товар {wb_sku} не имеет полных обогащенных данных")
+                logger.info(f"📊 Состояние обогащения:")
+                logger.info(f"   enriched_type: {source_product.enriched_type}")
+                logger.info(f"   enriched_gender: {source_product.enriched_gender}")
+                logger.info(f"   enriched_brand: {source_product.enriched_brand}")
+                logger.info(f"   linked_oz_skus: {len(source_product.linked_oz_skus or [])}")
+                
+                # НОВЫЙ FALLBACK АЛГОРИТМ: поиск по базовым WB характеристикам
+                logger.info(f"🔄 Применяем fallback алгоритм поиска по базовым WB характеристикам...")
+                fallback_recommendations = self._find_recommendations_by_wb_characteristics(source_product)
+                
+                if fallback_recommendations:
+                    logger.info(f"✅ Fallback алгоритм нашел {len(fallback_recommendations)} рекомендаций")
+                    # Интеграция с ручными рекомендациями для fallback
+                    final_fallback = self._merge_with_manual_recommendations(wb_sku, fallback_recommendations)
+                    return final_fallback
+                else:
+                    logger.warning(f"❌ Fallback алгоритм не нашел рекомендаций")
+                    # Попытаемся создать рекомендации только из ручных данных
+                    manual_only = self._merge_with_manual_recommendations(wb_sku, [])
+                    if manual_only:
+                        logger.info(f"✅ Используем только ручные рекомендации: {len(manual_only)} шт.")
+                        return manual_only
                 return []
             
             logger.info(f"📊 Товар найден - тип: {source_product.get_effective_type()}, пол: {source_product.get_effective_gender()}, бренд: {source_product.get_effective_brand()}")
@@ -1066,15 +1213,20 @@ class WBRecommendationEngine:
                 logger.warning(f"❌ Нет рекомендаций после всех попыток")
                 return []
             
-            # Сортируем и ограничиваем количество
-            logger.info(f"📊 Сортировка и ограничение до {self.config.max_recommendations} рекомендаций")
+            # Сортируем алгоритмические рекомендации
+            logger.info(f"📊 Сортировка алгоритмических рекомендаций")
             recommendations.sort(key=lambda r: r.score, reverse=True)
-            final_recommendations = recommendations[:self.config.max_recommendations]
+            
+            # Интеграция с ручными рекомендациями
+            final_recommendations = self._merge_with_manual_recommendations(wb_sku, recommendations)
             
             logger.info(f"🎉 Найдено {len(final_recommendations)} итоговых рекомендаций для WB товара {wb_sku}")
             if final_recommendations:
                 scores = [r.score for r in final_recommendations]
+                manual_count = sum(1 for r in final_recommendations if r.is_manual)
+                algorithmic_count = len(final_recommendations) - manual_count
                 logger.info(f"📊 Score диапазон: {min(scores):.1f} - {max(scores):.1f}")
+                logger.info(f"📊 Состав: {algorithmic_count} алгоритмических + {manual_count} ручных рекомендаций")
             
             return final_recommendations
             
@@ -1082,6 +1234,81 @@ class WBRecommendationEngine:
             logger.error(f"❌ Критическая ошибка при поиске похожих товаров для WB {wb_sku}: {e}")
             return []
     
+    def _find_recommendations_by_wb_characteristics(self, source_product: WBProductInfo) -> List[WBRecommendation]:
+        """
+        FALLBACK алгоритм поиска рекомендаций по базовым WB характеристикам
+        Когда нет обогащенных данных из Ozon
+        """
+        logger.info(f"🔄 FALLBACK: Поиск по базовым WB характеристикам для {source_product.wb_sku}")
+        
+        try:
+            # Поиск похожих товаров по бренду и категории WB
+            query = """
+            SELECT DISTINCT wb.wb_sku
+            FROM wb_products wb
+            LEFT JOIN wb_prices wp ON wb.wb_sku = wp.wb_sku
+            WHERE wb.wb_brand = ?
+            AND wb.wb_category = ?
+            AND wb.wb_sku != ?
+            AND COALESCE(wp.wb_fbo_stock, COALESCE(wb.wb_stock, 0), 0) > 0
+            ORDER BY COALESCE(wp.wb_fbo_stock, COALESCE(wb.wb_stock, 0), 0) DESC
+            LIMIT ?
+            """
+            
+            candidates_data = self.db_conn.execute(query, [
+                source_product.wb_brand,
+                source_product.wb_category, 
+                source_product.wb_sku,
+                self.config.max_recommendations * 2  # Берем больше для фильтрации
+            ]).fetchall()
+            
+            logger.info(f"📊 FALLBACK: Найдено {len(candidates_data)} кандидатов по бренду+категории")
+            
+            if not candidates_data:
+                return []
+            
+            # Создаем рекомендации с базовым scoring
+            recommendations = []
+            for candidate_row in candidates_data:
+                candidate_sku = str(candidate_row[0])
+                
+                # Получаем информацию о кандидате
+                candidate_info = self.data_collector.get_wb_product_info(candidate_sku)
+                if not candidate_info:
+                    continue
+                
+                # Простой scoring для fallback
+                base_score = 50  # Базовый score для fallback
+                
+                # Бонус за совпадение размерной сетки
+                if (source_product.wb_sizes and candidate_info.wb_sizes and 
+                    set(source_product.wb_sizes) & set(candidate_info.wb_sizes)):
+                    base_score += 20
+                
+                # Бонус за близкую цену
+                if (source_product.wb_full_price and candidate_info.wb_full_price):
+                    price_diff = abs(source_product.wb_full_price - candidate_info.wb_full_price)
+                    price_similarity = max(0, 100 - price_diff / max(source_product.wb_full_price, candidate_info.wb_full_price) * 100)
+                    base_score += price_similarity * 0.1  # Небольшой бонус за цену
+                
+                recommendation = WBRecommendation(
+                    product_info=candidate_info,
+                    score=base_score,
+                    match_details=f"Fallback поиск: тот же бренд ({source_product.wb_brand}) и категория ({source_product.wb_category})"
+                )
+                recommendations.append(recommendation)
+            
+            # Ограничиваем количество и сортируем
+            recommendations.sort(key=lambda r: r.score, reverse=True)
+            final_recommendations = recommendations[:self.config.max_recommendations]
+            
+            logger.info(f"✅ FALLBACK: Создано {len(final_recommendations)} рекомендаций")
+            return final_recommendations
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка FALLBACK алгоритма: {e}")
+            return []
+
     def calculate_similarity_score(self, source: WBProductInfo, candidate: WBProductInfo) -> float:
         """
         Вычисление score схожести между WB товарами
@@ -1456,16 +1683,150 @@ class WBRecommendationEngine:
             result += f"\n\n📊 Детализация баллов:\n" + "\n".join(scores)
         
         return result
+    
+    def _merge_with_manual_recommendations(self, target_wb_sku: str, 
+                                         algorithmic_recommendations: List[WBRecommendation]) -> List[WBRecommendation]:
+        """
+        Слияние алгоритмических рекомендаций с ручными
+        
+        Args:
+            target_wb_sku: WB SKU исходного товара
+            algorithmic_recommendations: Список алгоритмических рекомендаций (отсортированный по score)
+            
+        Returns:
+            Объединенный список рекомендаций с вставленными ручными на нужные позиции
+        """
+        # Если нет менеджера ручных рекомендаций, возвращаем только алгоритмические
+        if not self.manual_manager or self.manual_manager.is_empty():
+            # Ограничиваем количество согласно конфигурации
+            return algorithmic_recommendations[:self.config.max_recommendations]
+        
+        # Получаем ручные рекомендации для данного товара
+        manual_data = self.manual_manager.get_manual_recommendations(target_wb_sku)
+        
+        # ОТЛАДКА: Добавляем детальное логирование
+        logger.info(f"🔍 DEBUG: Поиск ручных рекомендаций для target_wb_sku='{target_wb_sku}' (тип: {type(target_wb_sku)})")
+        all_targets = self.manual_manager.get_all_target_skus()
+        logger.info(f"🔍 DEBUG: Доступные target_skus в manual_manager: {all_targets}")
+        logger.info(f"🔍 DEBUG: Найдено ручных рекомендаций: {len(manual_data) if manual_data else 0}")
+        
+        if not manual_data:
+            # Нет ручных рекомендаций для этого товара
+            logger.info(f"⚠️ DEBUG: Нет ручных рекомендаций для {target_wb_sku}, возвращаем только алгоритмические")
+            return algorithmic_recommendations[:self.config.max_recommendations]
+        
+        logger.info(f"📋 Интеграция ручных рекомендаций для {target_wb_sku}: {len(manual_data)} шт.")
+        
+        # Создаем список результатов с максимальным размером
+        result = [None] * self.config.max_recommendations
+        used_skus = set()  # Для избежания дубликатов
+        manual_count = 0
+        
+        # Вставляем ручные рекомендации на указанные позиции
+        for position, recommended_sku in manual_data:
+            # Позиции в CSV 1-индексированные, переводим в 0-индексированные
+            zero_based_position = position - 1
+            
+            # Проверяем, что позиция в пределах допустимого диапазона
+            if zero_based_position >= self.config.max_recommendations:
+                logger.warning(f"⚠️ Ручная рекомендация на позиции {position} выходит за пределы max_recommendations ({self.config.max_recommendations})")
+                continue
+            
+            # Проверяем, что товар не дублируется
+            if recommended_sku in used_skus:
+                logger.warning(f"⚠️ WB SKU {recommended_sku} уже добавлен в рекомендации, пропускаем дубликат")
+                continue
+            
+            # Получаем информацию о рекомендуемом товаре
+            logger.info(f"🔍 DEBUG: Поиск информации о рекомендуемом товаре: {recommended_sku} (тип: {type(recommended_sku)})")
+            manual_product_info = self.data_collector.get_wb_product_info(recommended_sku)
+            
+            if not manual_product_info:
+                logger.warning(f"⚠️ DEBUG: Ручная рекомендация {recommended_sku} не найдена в базе данных, создаем заглушку")
+                # Создаем заглушку для внешнего товара (рекламного)
+                manual_product_info = self._create_external_product_stub(recommended_sku)
+            else:
+                logger.info(f"✅ DEBUG: Информация о товаре {recommended_sku} найдена: {manual_product_info.wb_brand} - {manual_product_info.wb_category}")
+            
+            # Создаем ручную рекомендацию с высоким score (чтобы выделялась)
+            is_external = manual_product_info.enrichment_source == "external"
+            match_details = f"🖐️ Ручная рекомендация (позиция {position})"
+            if is_external:
+                match_details += " - 🔗 Внешний товар"
+            
+            manual_recommendation = WBRecommendation(
+                product_info=manual_product_info,
+                score=999.0,  # Высокий score для ручных рекомендаций
+                match_details=match_details,
+                is_manual=True,
+                manual_position=position
+            )
+            
+            result[zero_based_position] = manual_recommendation
+            used_skus.add(recommended_sku)
+            manual_count += 1
+            
+            logger.debug(f"✅ Добавлена ручная рекомендация {recommended_sku} на позицию {position}")
+        
+        # Заполняем оставшиеся позиции алгоритмическими рекомендациями
+        algorithmic_index = 0
+        for i in range(self.config.max_recommendations):
+            if result[i] is None:  # Позиция свободна
+                # Ищем следующую алгоритмическую рекомендацию, которая не дублируется
+                while (algorithmic_index < len(algorithmic_recommendations) and 
+                       algorithmic_recommendations[algorithmic_index].product_info.wb_sku in used_skus):
+                    algorithmic_index += 1
+                
+                if algorithmic_index < len(algorithmic_recommendations):
+                    result[i] = algorithmic_recommendations[algorithmic_index]
+                    used_skus.add(algorithmic_recommendations[algorithmic_index].product_info.wb_sku)
+                    algorithmic_index += 1
+        
+        # Убираем None значения (если алгоритмических рекомендаций не хватило)
+        final_result = [rec for rec in result if rec is not None]
+        
+        algorithmic_count = len(final_result) - manual_count
+        logger.info(f"📊 Слияние завершено: {len(final_result)} рекомендаций ({algorithmic_count} алгоритмических + {manual_count} ручных)")
+        
+        return final_result
+    
+    def _create_external_product_stub(self, wb_sku: str) -> 'WBProductInfo':
+        """
+        Создание заглушки для внешнего товара (рекламного), которого нет в нашей БД
+        
+        Args:
+            wb_sku: WB SKU внешнего товара
+            
+        Returns:
+            WBProductInfo: Заглушка с минимальной информацией
+        """
+        # Создаем заглушку с минимальной информацией
+        stub = WBProductInfo(
+            wb_sku=str(wb_sku),
+            wb_category=f"🔗 Внешний товар",
+            wb_brand=f"🔗 Рекламный товар",
+            wb_sizes=[],
+            wb_barcodes=None,
+            wb_fbo_stock=0,
+            wb_full_price=None,
+            wb_discount=None,
+            enrichment_source="external"
+        )
+        
+        logger.info(f"📦 Создана заглушка для внешнего товара: {wb_sku}")
+        return stub
 
 
 class WBRecommendationProcessor:
     """Главный класс-оркестратор для обработки WB рекомендаций"""
     
-    def __init__(self, db_conn, config: WBScoringConfig = None):
+    def __init__(self, db_conn, config: WBScoringConfig = None, 
+                 manual_recommendations_manager: Optional[ManualRecommendationsManager] = None):
         self.db_conn = db_conn
         self.config = config or WBScoringConfig()
         self.data_collector = WBDataCollector(db_conn)  # Добавляем data_collector для оптимизированных методов
-        self.recommendation_engine = WBRecommendationEngine(db_conn, self.config)
+        self.manual_manager = manual_recommendations_manager
+        self.recommendation_engine = WBRecommendationEngine(db_conn, self.config, manual_recommendations_manager)
     
     def process_single_wb_product(self, wb_sku: str) -> WBProcessingResult:
         """
@@ -2088,13 +2449,16 @@ class WBRecommendationProcessor:
             # Сортируем по убыванию score
             recommendations.sort(key=lambda x: x.score, reverse=True)
             
-            # Ограничиваем количество рекомендаций
-            recommendations = recommendations[:self.config.max_recommendations]
+            # ВАЖНО: Интеграция с ручными рекомендациями (как в стандартном алгоритме)
+            logger.debug(f"🔄 ОПТИМИЗИРОВАННЫЙ: Интеграция ручных рекомендаций для {source_product.wb_sku}")
+            final_recommendations = self.recommendation_engine._merge_with_manual_recommendations(
+                source_product.wb_sku, recommendations
+            )
             
-            # Определяем статус
+            # Определяем статус на основе итоговых рекомендаций
             total_time = time.time() - start_time
             
-            if not recommendations:
+            if not final_recommendations:
                 return WBProcessingResult(
                     wb_sku=source_product.wb_sku,
                     status=WBProcessingStatus.NO_SIMILAR,
@@ -2102,21 +2466,21 @@ class WBRecommendationProcessor:
                     processing_time=total_time,
                     enrichment_info={}
                 )
-            elif len(recommendations) < self.config.min_recommendations:
+            elif len(final_recommendations) < self.config.min_recommendations:
                 return WBProcessingResult(
                     wb_sku=source_product.wb_sku,
                     status=WBProcessingStatus.INSUFFICIENT_RECOMMENDATIONS,
-                    recommendations=recommendations,
+                    recommendations=final_recommendations,
                     processing_time=total_time,
-                    enrichment_info={"count": len(recommendations)}
+                    enrichment_info={"count": len(final_recommendations)}
                 )
             else:
                 return WBProcessingResult(
                     wb_sku=source_product.wb_sku,
                     status=WBProcessingStatus.SUCCESS,
-                    recommendations=recommendations,
+                    recommendations=final_recommendations,
                     processing_time=total_time,
-                    enrichment_info={"count": len(recommendations)}
+                    enrichment_info={"count": len(final_recommendations)}
                 )
                 
         except Exception as e:
@@ -2129,6 +2493,41 @@ class WBRecommendationProcessor:
                 enrichment_info={},
                 error_message=str(e)
             )
+    
+    def set_manual_recommendations_manager(self, manual_manager: Optional[ManualRecommendationsManager]):
+        """
+        Установка или обновление менеджера ручных рекомендаций
+        
+        Args:
+            manual_manager: Экземпляр ManualRecommendationsManager или None для отключения
+        """
+        self.manual_manager = manual_manager
+        self.recommendation_engine.manual_manager = manual_manager
+        
+        if manual_manager:
+            stats = manual_manager.get_statistics()
+            logger.info(f"✅ ManualRecommendationsManager установлен: {stats['total_targets']} товаров, {stats['total_recommendations']} рекомендаций")
+        else:
+            logger.info("📋 ManualRecommendationsManager отключен")
+    
+    def get_manual_recommendations_statistics(self) -> Dict[str, Any]:
+        """
+        Получение статистики по ручным рекомендациям
+        
+        Returns:
+            Словарь со статистикой ручных рекомендаций
+        """
+        if not self.manual_manager:
+            return {
+                'enabled': False,
+                'total_targets': 0,
+                'total_recommendations': 0,
+                'source': 'none'
+            }
+        
+        stats = self.manual_manager.get_statistics()
+        stats['enabled'] = True
+        return stats
     
     def get_statistics(self) -> Dict[str, Any]:
         """Получение статистики по WB товарам"""
