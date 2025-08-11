@@ -9,6 +9,7 @@ This page allows users to:
 import streamlit as st
 from utils.db_connection import connect_db
 from utils.db_search_helpers import get_normalized_wb_barcodes, get_ozon_barcodes_and_identifiers
+from utils.config_utils import get_margin_config
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -137,6 +138,488 @@ def get_oz_product_types(db_conn, oz_vendor_codes: list[str]) -> pd.DataFrame:
     except Exception as e:
         st.error(f"Ошибка при получении типов продуктов из oz_category_products: {e}")
         return pd.DataFrame()
+
+def get_cost_prices_from_punta(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
+    """
+    Retrieves cost_price_usd from punta_table for given WB SKUs.
+    Enhanced with comprehensive error handling and validation.
+    
+    Args:
+        db_conn: Database connection
+        wb_sku_list: List of WB SKUs
+        
+    Returns:
+        DataFrame with wb_sku and cost_price_usd columns
+    """
+    if not wb_sku_list:
+        return pd.DataFrame()
+    
+    try:
+        # Validate database connection
+        if not db_conn:
+            st.warning("⚠️ Нет подключения к базе данных. Расчет маржинальности недоступен.")
+            return pd.DataFrame()
+        
+        # Convert wb_sku_list to integers for proper matching with validation
+        wb_skus_int = []
+        invalid_skus = []
+        
+        for wb_sku in wb_sku_list:
+            try:
+                wb_skus_int.append(int(wb_sku))
+            except (ValueError, TypeError):
+                invalid_skus.append(str(wb_sku))
+                continue
+        
+        # Log invalid SKUs for debugging
+        if invalid_skus:
+            print(f"DEBUG: Invalid WB SKUs for cost price lookup: {invalid_skus[:5]}...")  # Log first 5 for brevity
+        
+        if not wb_skus_int:
+            st.info("ℹ️ Не найдено валидных WB SKU для получения данных о себестоимости.")
+            return pd.DataFrame()
+        
+        # Check if punta_table exists and has required structure
+        try:
+            # First check if table exists
+            table_exists_query = "SELECT name FROM sqlite_master WHERE type='table' AND name='punta_table'"
+            table_check = db_conn.execute(table_exists_query).fetchdf()
+            
+            if table_check.empty:
+                st.info("ℹ️ Таблица punta_table не найдена. Расчет маржинальности будет недоступен.")
+                return pd.DataFrame()
+            
+            # Check table structure
+            columns_query = "PRAGMA table_info(punta_table)"
+            columns_info = db_conn.execute(columns_query).fetchdf()
+            available_columns = columns_info['name'].tolist()
+            
+            required_columns = ['wb_sku', 'cost_price_usd']
+            missing_columns = [col for col in required_columns if col not in available_columns]
+            
+            if missing_columns:
+                st.warning(f"⚠️ В таблице punta_table отсутствуют необходимые колонки: {', '.join(missing_columns)}. Расчет маржинальности недоступен.")
+                return pd.DataFrame()
+                
+        except Exception as table_error:
+            st.info("ℹ️ Не удается проверить структуру таблицы punta_table. Расчет маржинальности недоступен.")
+            print(f"DEBUG: Table structure check error: {table_error}")
+            return pd.DataFrame()
+        
+        # Query for cost_price_usd data using first occurrence for each WB SKU
+        # Note: cost_price_usd is stored as VARCHAR with comma as decimal separator
+        try:
+            query = """
+            WITH first_occurrences AS (
+                SELECT wb_sku, cost_price_usd,
+                       ROW_NUMBER() OVER (PARTITION BY wb_sku ORDER BY ROWID) as rn
+                FROM punta_table 
+                WHERE wb_sku IN ({})
+                    AND cost_price_usd IS NOT NULL
+                    AND TRIM(cost_price_usd) != ''
+                    AND TRIM(cost_price_usd) != '0'
+                    AND TRIM(cost_price_usd) != '0,00'
+                    AND TRIM(cost_price_usd) != '0.00'
+            )
+            SELECT wb_sku, cost_price_usd
+            FROM first_occurrences 
+            WHERE rn = 1
+            """.format(', '.join(['?'] * len(wb_skus_int)))
+            
+            cost_df = db_conn.execute(query, wb_skus_int).fetchdf()
+            
+        except Exception as query_error:
+            st.error(f"❌ Ошибка при выполнении запроса к таблице punta_table: {query_error}")
+            print(f"DEBUG: Query execution error: {query_error}")
+            return pd.DataFrame()
+        
+        if not cost_df.empty:
+            cost_df['wb_sku'] = cost_df['wb_sku'].astype(str)
+            
+            # Convert cost_price_usd from string with comma to float with enhanced validation
+            def convert_cost_price(price_str):
+                try:
+                    if pd.isna(price_str) or str(price_str).strip() == '':
+                        return None
+                    
+                    # Clean and normalize the price string
+                    price_clean = str(price_str).strip().replace(',', '.')
+                    
+                    # Remove any non-numeric characters except decimal point
+                    import re
+                    price_clean = re.sub(r'[^\d.]', '', price_clean)
+                    
+                    if not price_clean or price_clean == '.':
+                        return None
+                    
+                    price_float = float(price_clean)
+                    
+                    # Validate reasonable price range (between $0.01 and $10,000)
+                    if price_float <= 0 or price_float > 10000:
+                        return None
+                        
+                    return price_float
+                    
+                except (ValueError, TypeError, AttributeError):
+                    return None
+            
+            cost_df['cost_price_usd'] = cost_df['cost_price_usd'].apply(convert_cost_price)
+            
+            # Filter out rows where conversion failed or price is invalid
+            valid_costs_before = len(cost_df)
+            cost_df = cost_df[cost_df['cost_price_usd'].notna() & (cost_df['cost_price_usd'] > 0)]
+            valid_costs_after = len(cost_df)
+            
+            # Log data quality information
+            if valid_costs_before > valid_costs_after:
+                invalid_count = valid_costs_before - valid_costs_after
+                print(f"DEBUG: Filtered out {invalid_count} invalid cost price entries")
+        
+        # Provide user feedback about data availability
+        if cost_df.empty:
+            st.info("ℹ️ Данные о себестоимости не найдены в таблице Punta для указанных товаров.")
+        else:
+            found_count = len(cost_df)
+            total_requested = len(wb_skus_int)
+            if found_count < total_requested:
+                missing_count = total_requested - found_count
+                st.info(f"ℹ️ Найдены данные о себестоимости для {found_count} из {total_requested} товаров. Для {missing_count} товаров данные отсутствуют.")
+        
+        return cost_df
+        
+    except Exception as e:
+        st.error(f"❌ Критическая ошибка при получении данных о себестоимости из Punta: {e}")
+        print(f"DEBUG: Critical error in get_cost_prices_from_punta: {e}")
+        return pd.DataFrame()
+
+def calculate_margin_percentage(
+    oz_actual_price: float,
+    cost_price_usd: float,
+    commission_percent: float,
+    acquiring_percent: float,
+    advertising_percent: float,
+    vat_percent: float,
+    exchange_rate: float
+) -> str:
+    """
+    Calculates margin percentage using the specified formula.
+    Enhanced with comprehensive error handling and validation.
+    
+    Formula: (((oz_actual_price/(1+VAT)-(oz_actual_price*((Commission+Acquiring+Advertising)/100))/1.2)/ExchangeRate)-cost_price_usd)/cost_price_usd
+    
+    Args:
+        oz_actual_price: Current Ozon price in rubles
+        cost_price_usd: Cost price in USD
+        commission_percent: Commission percentage (e.g., 36.0 for 36%)
+        acquiring_percent: Acquiring percentage (e.g., 0.0 for 0%)
+        advertising_percent: Advertising percentage (e.g., 3.0 for 3%)
+        vat_percent: VAT percentage (e.g., 20.0 for 20%)
+        exchange_rate: USD to RUB exchange rate (e.g., 90.0)
+    
+    Returns:
+        str: Formatted percentage with 1 decimal place (e.g., "15.3%") or error indicator
+    """
+    try:
+        # Enhanced input validation with detailed error handling
+        input_params = {
+            'oz_actual_price': oz_actual_price,
+            'cost_price_usd': cost_price_usd,
+            'commission_percent': commission_percent,
+            'acquiring_percent': acquiring_percent,
+            'advertising_percent': advertising_percent,
+            'vat_percent': vat_percent,
+            'exchange_rate': exchange_rate
+        }
+        
+        # Check for None or NaN values
+        for param_name, param_value in input_params.items():
+            if param_value is None or (hasattr(pd, 'isna') and pd.isna(param_value)):
+                print(f"DEBUG: Margin calculation failed - {param_name} is None/NaN")
+                return "Нет данных"
+        
+        # Validate data types
+        for param_name, param_value in input_params.items():
+            if not isinstance(param_value, (int, float)):
+                try:
+                    # Try to convert to float
+                    input_params[param_name] = float(param_value)
+                except (ValueError, TypeError):
+                    print(f"DEBUG: Margin calculation failed - {param_name} is not numeric: {param_value}")
+                    return "N/A"
+        
+        # Extract validated values
+        oz_actual_price = input_params['oz_actual_price']
+        cost_price_usd = input_params['cost_price_usd']
+        commission_percent = input_params['commission_percent']
+        acquiring_percent = input_params['acquiring_percent']
+        advertising_percent = input_params['advertising_percent']
+        vat_percent = input_params['vat_percent']
+        exchange_rate = input_params['exchange_rate']
+        
+        # Validate value ranges
+        if cost_price_usd <= 0:
+            return "Нет данных"
+        
+        if oz_actual_price <= 0:
+            print(f"DEBUG: Invalid oz_actual_price: {oz_actual_price}")
+            return "N/A"
+        
+        if exchange_rate <= 0:
+            print(f"DEBUG: Invalid exchange_rate: {exchange_rate}")
+            return "Ошибка"
+        
+        # Validate percentage ranges (should be reasonable business values)
+        if not (0 <= commission_percent <= 100):
+            print(f"DEBUG: Invalid commission_percent: {commission_percent}")
+            return "Ошибка"
+        
+        if not (0 <= acquiring_percent <= 100):
+            print(f"DEBUG: Invalid acquiring_percent: {acquiring_percent}")
+            return "Ошибка"
+        
+        if not (0 <= advertising_percent <= 100):
+            print(f"DEBUG: Invalid advertising_percent: {advertising_percent}")
+            return "Ошибка"
+        
+        if not (0 <= vat_percent <= 100):
+            print(f"DEBUG: Invalid vat_percent: {vat_percent}")
+            return "Ошибка"
+        
+        # Validate exchange rate range (reasonable USD/RUB rates)
+        if not (1 <= exchange_rate <= 1000):
+            print(f"DEBUG: Suspicious exchange_rate: {exchange_rate}")
+            return "Ошибка"
+        
+        # Convert VAT percentage to decimal for calculation
+        vat_decimal = vat_percent / 100
+        
+        # Apply the specified formula with step-by-step validation:
+        # (((oz_actual_price/(1+vat)-(oz_actual_price*((commission+acquiring+advertising)/100))/1.2)/exchange_rate)-cost_price_usd)/cost_price_usd
+        
+        # Step 1: Calculate price after VAT
+        if (1 + vat_decimal) <= 0:
+            print(f"DEBUG: Invalid VAT calculation: 1 + {vat_decimal} = {1 + vat_decimal}")
+            return "Ошибка"
+        
+        price_after_vat = oz_actual_price / (1 + vat_decimal)
+        
+        # Step 2: Calculate total fees percentage
+        total_fees_percent = commission_percent + acquiring_percent + advertising_percent
+        
+        # Validate total fees don't exceed 100%
+        if total_fees_percent > 100:
+            print(f"DEBUG: Total fees exceed 100%: {total_fees_percent}")
+            return "Ошибка"
+        
+        # Step 3: Calculate fees amount
+        fees_amount = oz_actual_price * (total_fees_percent / 100)
+        
+        # Step 4: Apply the 1.2 divisor to fees (as per formula)
+        fees_adjusted = fees_amount / 1.2
+        
+        # Step 5: Calculate net price after VAT and fees
+        net_price_rub = price_after_vat - fees_adjusted
+        
+        # Validate that net price is positive (otherwise business model is unsustainable)
+        if net_price_rub <= 0:
+            print(f"DEBUG: Negative net price: {net_price_rub}")
+            return "Убыток"
+        
+        # Step 6: Convert to USD
+        net_price_usd = net_price_rub / exchange_rate
+        
+        # Step 7: Calculate margin
+        margin_usd = net_price_usd - cost_price_usd
+        
+        # Step 8: Calculate margin percentage
+        margin_percentage = (margin_usd / cost_price_usd) * 100
+        
+        # Validate result is reasonable (between -1000% and +1000%)
+        if not (-1000 <= margin_percentage <= 1000):
+            print(f"DEBUG: Extreme margin percentage: {margin_percentage}")
+            return "Ошибка"
+        
+        # Format result with 1 decimal place
+        return f"{margin_percentage:.1f}%"
+        
+    except ZeroDivisionError as e:
+        print(f"DEBUG: Division by zero in margin calculation: {e}")
+        return "N/A"
+    except (ValueError, TypeError) as e:
+        print(f"DEBUG: Value/Type error in margin calculation: {e}")
+        return "Ошибка"
+    except OverflowError as e:
+        print(f"DEBUG: Overflow error in margin calculation: {e}")
+        return "Ошибка"
+    except Exception as e:
+        print(f"DEBUG: Unexpected error in margin calculation: {e}")
+        return "N/A"
+
+def calculate_margins_for_dataframe(df: pd.DataFrame, cost_prices_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds margin_percent column to the dataframe with calculated margins.
+    Enhanced with comprehensive error handling and validation.
+    
+    Args:
+        df: DataFrame with product data including wb_sku and oz_actual_price columns
+        cost_prices_df: DataFrame with wb_sku and cost_price_usd columns
+    
+    Returns:
+        DataFrame with added margin_percent column
+    """
+    if df.empty:
+        return df
+    
+    try:
+        # Load margin configuration with validation and fallbacks
+        margin_config = get_margin_config()
+        
+        # Validate margin configuration and provide fallbacks
+        validated_config = {}
+        default_config = {
+            'commission_percent': 36.0,
+            'acquiring_percent': 0.0,
+            'advertising_percent': 3.0,
+            'vat_percent': 20.0,
+            'exchange_rate': 90.0
+        }
+        
+        config_errors = []
+        for param, default_value in default_config.items():
+            try:
+                value = margin_config.get(param, default_value)
+                if value is None or (hasattr(pd, 'isna') and pd.isna(value)):
+                    validated_config[param] = default_value
+                    config_errors.append(f"{param} was None, using default {default_value}")
+                else:
+                    validated_config[param] = float(value)
+            except (ValueError, TypeError):
+                validated_config[param] = default_value
+                config_errors.append(f"{param} was invalid, using default {default_value}")
+        
+        # Log configuration issues
+        if config_errors:
+            print(f"DEBUG: Margin configuration issues: {config_errors}")
+            st.warning("⚠️ Некоторые параметры расчета маржинальности были сброшены к значениям по умолчанию.")
+        
+        # Validate configuration ranges
+        if not (0 <= validated_config['commission_percent'] <= 100):
+            validated_config['commission_percent'] = 36.0
+            st.warning("⚠️ Некорректное значение комиссии, используется значение по умолчанию (36%).")
+        
+        if not (0 <= validated_config['acquiring_percent'] <= 100):
+            validated_config['acquiring_percent'] = 0.0
+            st.warning("⚠️ Некорректное значение эквайринга, используется значение по умолчанию (0%).")
+        
+        if not (0 <= validated_config['advertising_percent'] <= 100):
+            validated_config['advertising_percent'] = 3.0
+            st.warning("⚠️ Некорректное значение рекламы, используется значение по умолчанию (3%).")
+        
+        if not (0 <= validated_config['vat_percent'] <= 100):
+            validated_config['vat_percent'] = 20.0
+            st.warning("⚠️ Некорректное значение НДС, используется значение по умолчанию (20%).")
+        
+        if not (1 <= validated_config['exchange_rate'] <= 1000):
+            validated_config['exchange_rate'] = 90.0
+            st.warning("⚠️ Некорректный курс валюты, используется значение по умолчанию (90 руб/USD).")
+        
+        # Merge cost price data with error handling
+        try:
+            if cost_prices_df.empty:
+                # No cost price data available
+                df_with_costs = df.copy()
+                df_with_costs['margin_percent'] = "Нет данных"
+                return df_with_costs
+            else:
+                df_with_costs = pd.merge(df, cost_prices_df, on='wb_sku', how='left')
+        except Exception as merge_error:
+            print(f"DEBUG: Error merging cost price data: {merge_error}")
+            df_with_costs = df.copy()
+            df_with_costs['margin_percent'] = "Ошибка"
+            return df_with_costs
+        
+        # Calculate margins for each row with enhanced error handling
+        def calculate_row_margin(row):
+            try:
+                # Check for missing required data
+                if pd.isna(row.get('cost_price_usd')) or pd.isna(row.get('oz_actual_price')):
+                    return "Нет данных"
+                
+                # Additional validation for zero values
+                if row.get('cost_price_usd', 0) <= 0:
+                    return "Нет данных"
+                
+                if row.get('oz_actual_price', 0) <= 0:
+                    return "N/A"
+                
+                return calculate_margin_percentage(
+                    oz_actual_price=row['oz_actual_price'],
+                    cost_price_usd=row['cost_price_usd'],
+                    commission_percent=validated_config['commission_percent'],
+                    acquiring_percent=validated_config['acquiring_percent'],
+                    advertising_percent=validated_config['advertising_percent'],
+                    vat_percent=validated_config['vat_percent'],
+                    exchange_rate=validated_config['exchange_rate']
+                )
+            except Exception as row_error:
+                print(f"DEBUG: Error calculating margin for row: {row_error}")
+                return "Ошибка"
+        
+        # Apply margin calculation with progress tracking for large datasets
+        if len(df_with_costs) > 100:
+            # For large datasets, show progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            margins = []
+            for i, (_, row) in enumerate(df_with_costs.iterrows()):
+                margin = calculate_row_margin(row)
+                margins.append(margin)
+                
+                # Update progress every 10 rows
+                if i % 10 == 0:
+                    progress = (i + 1) / len(df_with_costs)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Расчет маржинальности: {i + 1}/{len(df_with_costs)}")
+            
+            df_with_costs['margin_percent'] = margins
+            progress_bar.empty()
+            status_text.empty()
+        else:
+            # For small datasets, calculate directly
+            df_with_costs['margin_percent'] = df_with_costs.apply(calculate_row_margin, axis=1)
+        
+        # Remove the temporary cost_price_usd column if it wasn't in the original DataFrame
+        if 'cost_price_usd' not in df.columns:
+            df_with_costs = df_with_costs.drop('cost_price_usd', axis=1)
+        
+        # Log calculation statistics
+        margin_stats = df_with_costs['margin_percent'].value_counts()
+        successful_calculations = len(df_with_costs[
+            ~df_with_costs['margin_percent'].isin(['Нет данных', 'N/A', 'Ошибка', 'Убыток'])
+        ])
+        total_rows = len(df_with_costs)
+        
+        if successful_calculations < total_rows:
+            missing_data_count = len(df_with_costs[df_with_costs['margin_percent'] == 'Нет данных'])
+            error_count = len(df_with_costs[df_with_costs['margin_percent'].isin(['N/A', 'Ошибка'])])
+            
+            if missing_data_count > 0:
+                st.info(f"ℹ️ Для {missing_data_count} товаров отсутствуют данные о себестоимости.")
+            
+            if error_count > 0:
+                st.warning(f"⚠️ Для {error_count} товаров произошли ошибки при расчете маржинальности.")
+        
+        return df_with_costs
+        
+    except Exception as e:
+        print(f"DEBUG: Critical error in calculate_margins_for_dataframe: {e}")
+        st.error(f"❌ Критическая ошибка при расчете маржинальности: {e}")
+        
+        # Return original dataframe with error indicator
+        df_error = df.copy()
+        df_error['margin_percent'] = "Ошибка"
+        return df_error
 
 def get_punta_data_for_rk(db_conn, wb_sku_list: list[str]) -> pd.DataFrame:
     """
@@ -408,6 +891,7 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     - wb_object: Object type from oz_category_products.type (по oz_vendor_code)
     - total_stock_wb_sku: Total stock for entire WB SKU
     - total_orders_wb_sku: Total orders for entire WB SKU (14 days)
+    - margin_percent: Calculated margin percentage or error indicator
     """
     if not wb_sku_list:
         return pd.DataFrame()
@@ -469,6 +953,9 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
     # Get total orders by WB SKU
     total_orders_df = calculate_total_orders_by_wb_sku(db_conn, unique_wb_skus, days_back=14)
     
+    # Get cost price data for margin calculation
+    cost_prices_df = get_cost_prices_from_punta(db_conn, unique_wb_skus)
+    
     # Merge all data step by step
     result_df = sku_pairs_df.copy()
     
@@ -514,6 +1001,9 @@ def get_linked_ozon_skus_with_details(db_conn, wb_sku_list: list[str]) -> pd.Dat
         result_df = pd.merge(result_df, total_orders_df, on='wb_sku', how='left')
     else:
         result_df['total_orders_wb_sku'] = 0
+    
+    # Calculate margin percentages
+    result_df = calculate_margins_for_dataframe(result_df, cost_prices_df)
     
     # Fill NaN values and ensure proper data types
     result_df['oz_fbo_stock'] = result_df['oz_fbo_stock'].fillna(0).astype(int)
@@ -732,30 +1222,50 @@ if not st.session_state.rk_search_results.empty:
     # Add ranking within each group
     display_df['Рейтинг в группе'] = display_df.groupby('Группа').cumcount() + 1
     
-    # Add margin placeholder
-    display_df['% маржи'] = "скоро"
+    # Add calculated margin percentages
+    display_df['% маржи'] = selected_df['margin_percent']
     
     # Reorder columns for better display
     column_order = [
         'Группа', 'WB SKU', 'Рейтинг в группе', 
-        'Ozon SKU', 'Артикул OZ', 
-        'Остаток', 'Заказов за 14 дней', 'Цена, ₽',
-        'Пол', 'Сезон', 'Материал', 'Предмет',
-        'Остаток всей модели', 'Заказы всей модели (14 дней)', '% маржи'
+        'Ozon SKU', 'Артикул OZ', 'Цена, ₽',
+        'Пол', 'Сезон', 'Материал', 'Предмет', 'Остаток',
+        'Остаток всей модели', 'Заказов за 14 дней', 'Заказы всей модели (14 дней)', '% маржи'
     ]
     
     display_df = display_df[column_order]
     
-    # Style the dataframe to highlight by groups
-    def highlight_by_group(row):
+    # Style the dataframe to highlight by groups and margin colors
+    def highlight_by_group_and_margin(row):
+        styles = [''] * len(row)
+        
+        # Group highlighting
         if row['Рейтинг в группе'] == 1:
-            return ['background-color: #e8f5e8'] * len(row)  # Green for #1 in group
+            styles = ['background-color: #e8f5e8'] * len(row)  # Green for #1 in group
         elif row['Рейтинг в группе'] <= 3:
-            return ['background-color: #f0f8ff'] * len(row)  # Light blue for top 3
-        else:
-            return [''] * len(row)
+            styles = ['background-color: #f0f8ff'] * len(row)  # Light blue for top 3
+        
+        # Margin color coding (override background for margin column only)
+        margin_col_idx = list(row.index).index('% маржи')
+        margin_value = row['% маржи']
+        
+        if isinstance(margin_value, str) and margin_value.endswith('%'):
+            try:
+                margin_num = float(margin_value.replace('%', ''))
+                if margin_num < 0:
+                    styles[margin_col_idx] = 'color: red; font-weight: bold'  # Red for negative
+                elif 0 <= margin_num <= 10:
+                    styles[margin_col_idx] = 'color: orange; font-weight: bold'  # Orange for low margin
+                else:
+                    styles[margin_col_idx] = 'color: green; font-weight: bold'  # Green for good margin
+            except ValueError:
+                pass
+        elif margin_value in ["Нет данных", "N/A", "Ошибка"]:
+            styles[margin_col_idx] = 'color: gray; font-style: italic'  # Gray for missing data
+        
+        return styles
     
-    styled_df = display_df.style.apply(highlight_by_group, axis=1)
+    styled_df = display_df.style.apply(highlight_by_group_and_margin, axis=1)
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
     
     # Show applied criteria

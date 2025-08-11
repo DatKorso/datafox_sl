@@ -1,134 +1,131 @@
-# Project Structure & Organization
+---
+inclusion: always
+---
 
-## Root Directory Layout
+# File Organization & Module Structure Rules
 
-```
-datafox_sl/
-├── app.py                     # Main Streamlit application entry point
-├── config.json               # Application configuration
-├── requirements.txt          # Python dependencies
-├── project_schema.sql        # Database schema definition
-├── pages/                    # Streamlit pages (numbered for ordering)
-├── utils/                    # Shared utility modules
-├── data/                     # Database files and reports
-├── rich_recommend/           # TypeScript microservice
-├── tests/                    # Test suite
-├── project-docs/             # Comprehensive documentation
-└── marketplace_reports/      # Raw marketplace data files
-```
+## File Placement Rules
 
-## Key Directories
+### ALWAYS place new files in these directories:
+- **Streamlit pages**: `/pages/` with format `{number}_{emoji}_{Russian_Name}.py`
+- **Shared utilities**: `/utils/` for reusable functions and classes
+- **Database operations**: Use existing `utils/db_*.py` modules or extend them
+- **UI components**: Create `*_ui_components.py` files in `/utils/` for reusable Streamlit widgets
+- **Tests**: `/tests/unit/` for unit tests, `/tests/` for integration tests
 
-### `/pages/` - Streamlit Application Pages
-Numbered pages for consistent navigation ordering:
-- `1_🏠_Главная.py` - Home dashboard
-- `2_🖇_Импорт_Отчетов_МП.py` - Data import tools
-- `3_⚙️_Настройки.py` - Application settings
-- `4_📖_Просмотр_БД.py` - Database viewer
-- `5_🔎_Поиск_Между_МП.py` - Cross-marketplace search
-- `6-17_*` - Specialized analytics and management tools
+### NEVER create files in:
+- Root directory (except configuration files)
+- `/data/` directory (reserved for database files)
+- `/marketplace_reports/` (reserved for raw data files)
 
-### `/utils/` - Shared Utilities
-Core utility modules organized by functionality:
-- **Database**: `db_connection.py`, `db_crud.py`, `db_schema.py`
-- **Cross-marketplace**: `cross_marketplace_linker.py` (central linking logic)
-- **Data Processing**: `data_cleaning.py`, `data_cleaner.py`
-- **UI Components**: `*_ui_components.py` files for reusable Streamlit components
-- **Specialized Tools**: `wb_recommendations.py`, `rich_content_oz.py`
+## Mandatory Naming Conventions
 
-### `/rich_recommend/` - TypeScript Microservice
-Modular TypeScript service structure:
-```
-rich_recommend/src/
-├── index.ts                  # Express server entry point
-├── data-source.ts           # TypeORM database configuration
-├── entity/                  # Database entities
-├── modules/                 # Feature modules (recommendations, rich-content, etc.)
-├── migration/               # Database migrations
-└── public/                  # Static web assets
-```
+### Python Files
+- **Modules**: `snake_case.py` (e.g., `wb_recommendations.py`)
+- **Classes**: `PascalCase` (e.g., `CrossMarketplaceLinker`)
+- **Functions**: `snake_case` (e.g., `get_bidirectional_links`)
+- **Constants**: `UPPER_SNAKE_CASE`
+- **Variables**: `snake_case`
 
-### `/project-docs/` - Documentation
-Comprehensive documentation organized by category:
-- **User Guides**: Step-by-step usage instructions
-- **Technical**: Architecture, implementation details, API docs
-- **Data Structures**: Database schemas and relationships
-- **Project Management**: Planning, reports, changelogs
-
-## Naming Conventions
-
-### Files
-- **Python modules**: `snake_case.py`
-- **Streamlit pages**: `{number}_{emoji}_{Russian_Name}.py`
-- **TypeScript files**: `PascalCase.ts` for classes, `camelCase.ts` for utilities
-- **Documentation**: `kebab-case.md`
+### Streamlit Pages
+- **Format**: `{number}_{emoji}_{Russian_Name}.py`
+- **Numbering**: Sequential (1-17 currently used)
+- **Emojis**: Single emoji representing page function
+- **Names**: Russian descriptive names with underscores
 
 ### Database Tables
-- **Ozon tables**: `oz_*` prefix (e.g., `oz_products`, `oz_barcodes`)
-- **Wildberries tables**: `wb_*` prefix (e.g., `wb_products`, `wb_prices`)
-- **System tables**: descriptive names (e.g., `marketplace_links`)
+- **Ozon**: MUST use `oz_` prefix (e.g., `oz_products`, `oz_barcodes`)
+- **Wildberries**: MUST use `wb_` prefix (e.g., `wb_products`, `wb_prices`)
+- **System**: Descriptive names (e.g., `marketplace_links`)
 
-### Code Organization
-- **Classes**: PascalCase (e.g., `CrossMarketplaceLinker`)
-- **Functions**: snake_case (e.g., `get_bidirectional_links`)
-- **Constants**: UPPER_SNAKE_CASE
-- **Variables**: snake_case
+## Module Structure Patterns
 
-## Import Patterns
-
-### Python Imports
+### Utility Module Template
+ALWAYS structure utility modules in this order:
 ```python
-# Standard library first
+"""Module docstring explaining purpose."""
+
+# Standard library imports
+import os
+from typing import List, Dict, Optional
+
+# Third-party imports
+import pandas as pd
+import streamlit as st
+
+# Local imports
+from utils.db_connection import connect_db
+
+# Constants
+DEFAULT_BATCH_SIZE = 1000
+
+# Helper functions
+def _private_helper():
+    pass
+
+# Main classes
+class MainClass:
+    pass
+
+# Public API functions
+def public_function():
+    pass
+```
+
+### Streamlit Page Template
+ALWAYS structure pages with:
+1. Page configuration (`st.set_page_config`)
+2. Imports (following standard order)
+3. Helper functions
+4. Main page logic
+5. Sidebar components
+6. Error handling with `st.error()`, `st.warning()`
+
+## Import Order Rules
+
+### ALWAYS follow this import order:
+```python
+# 1. Standard library
 import os
 import json
 from typing import List, Dict, Optional
 
-# Third-party libraries
+# 2. Third-party libraries
 import streamlit as st
 import pandas as pd
 import duckdb
 
-# Local utilities
+# 3. Local utilities (alphabetical)
 from utils.db_connection import connect_db
 from utils.cross_marketplace_linker import CrossMarketplaceLinker
 ```
 
-### Utility Module Structure
-Each utility module should follow this pattern:
-- Docstring explaining module purpose
-- Import statements
-- Constants and configuration
-- Helper functions
-- Main classes
-- Public API functions
+### Database Connection Rules
+- **ALWAYS** use `from utils.db_connection import connect_db`
+- **NEVER** create direct database connections in pages
+- **ALWAYS** use context managers for database operations
 
-## Configuration Management
+## UI Component Organization
 
-### Config Files
-- `config.json` - Main application configuration
-- `config.example.json` - Template for new installations
-- `.streamlit/config.toml` - Streamlit-specific settings
+### Reusable Components
+- **MUST** create `*_ui_components.py` files for shared Streamlit widgets
+- **ALWAYS** prefix component functions with the module name
+- **EXAMPLE**: `cards_matcher_ui_components.py` → `cards_matcher_display_results()`
 
-### Environment Variables
-- Database paths and connection strings
-- API keys and external service credentials
-- Feature flags and debug settings
+### Page-Specific Components
+- **SHOULD** define helper functions within the page file
+- **MUST** use descriptive names starting with `_` for private helpers
+- **ALWAYS** place UI helpers before main page logic
 
-## Data Flow Architecture
+## Cross-Service Integration
 
-### Input Sources
-- Excel files in `marketplace_reports/`
-- Google Sheets integration
-- Manual data entry through Streamlit interface
+### TypeScript Service Communication
+- **ALWAYS** use HTTP API calls for Python ↔ TypeScript communication
+- **NEVER** share database connections between services
+- **MUST** handle API errors gracefully with user feedback
 
-### Processing Pipeline
-1. **Import** → `pages/2_*` and utility importers
-2. **Storage** → DuckDB database in `data/`
-3. **Linking** → `CrossMarketplaceLinker` for product relationships
-4. **Analysis** → Specialized page modules
-5. **Export** → Excel, CSV, or direct database queries
-
-### Cross-Service Communication
-- Python ↔ TypeScript via HTTP API calls
-- Shared data through database connections
-- File-based data exchange for large datasets
+### File Processing Rules
+- **ALWAYS** validate file uploads before processing
+- **MUST** use streaming for files >10MB
+- **SHOULD** provide progress indicators for long operations
+- **ALWAYS** clean up temporary files after processing

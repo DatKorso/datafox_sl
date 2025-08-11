@@ -4,83 +4,82 @@ inclusion: always
 
 # DataFox SL - Marketplace Analytics Platform
 
-## Domain Conventions
+## Naming Conventions (MANDATORY)
 
-### Marketplace Terminology
-- **Ozon (OZ)**: Use `oz_` prefix for all Ozon-related tables, variables, and functions
-- **Wildberries (WB)**: Use `wb_` prefix for all Wildberries-related tables, variables, and functions
-- **Cross-marketplace**: Use `marketplace_links` table for product relationships between platforms
-- **Barcodes**: Primary linking mechanism between marketplaces - always validate barcode format and uniqueness
+### Marketplace Prefixes
+- **Ozon**: Always use `oz_` prefix for tables, variables, functions (e.g., `oz_products`, `oz_barcodes`)
+- **Wildberries**: Always use `wb_` prefix for tables, variables, functions (e.g., `wb_products`, `wb_prices`)
+- **Cross-marketplace**: Use `marketplace_links` table for product relationships
 
-### Data Handling Patterns
-- **Product Cards**: Always include `product_id`, `barcode`, `title`, `price`, `category` as minimum fields
-- **Cross-linking**: Use `CrossMarketplaceLinker` class for all product relationship operations
-- **Data Import**: Validate marketplace data format before processing, handle encoding issues (Russian text)
-- **Excel Processing**: Use `openpyxl` for complex operations, `pandas` for simple read/write operations
+### Code Style
+- **Python**: `snake_case` for functions/variables, `PascalCase` for classes
+- **Streamlit pages**: `{number}_{emoji}_{Russian_Name}.py` format
+- **Database tables**: Lowercase with underscores, marketplace prefix required
+- **Constants**: `UPPER_SNAKE_CASE`
+
+## Data Validation Rules
+
+### Required Fields
+- **Product records**: Must include `product_id`, `barcode`, `title`, `price`, `category`
+- **Barcodes**: Primary linking mechanism - validate format and uniqueness before processing
+- **Russian text**: Handle Cyrillic encoding properly, use UTF-8 throughout
+
+### Database Operations
+- **Primary DB**: DuckDB for analytics (`data/marketplace_data.db`)
+- **TypeScript service**: PostgreSQL only
+- **Queries**: Always use parameterized queries, never string concatenation
+- **Connections**: Use `utils.db_connection.connect_db()` for DuckDB access
 
 ## Architecture Patterns
 
-### Streamlit Page Structure
-- Use numbered prefixes for page ordering: `1_🏠_`, `2_🖇_`, etc.
-- Include emoji indicators for visual navigation
-- Implement progress bars for long-running operations using `st.progress()`
-- Use `@st.cache_data` for expensive data operations with 300-second TTL
+### Streamlit Pages
+- Use `@st.cache_data(ttl=300)` for expensive operations
+- Show `st.progress()` for operations >2 seconds
+- Error feedback: `st.error()`, `st.warning()`, `st.info()`
+- Sidebar navigation with marketplace filters
 
-### Database Operations
-- **DuckDB**: Primary analytical database for aggregations and complex queries
-- **PostgreSQL**: TypeScript service persistence only
-- Always use parameterized queries to prevent SQL injection
-- Implement connection pooling for concurrent operations
+### Cross-Marketplace Linking
+- Use `CrossMarketplaceLinker` class for all product relationships
+- Support bidirectional linking (OZ↔WB)
+- Check existing links before creating new ones
+- Maintain confidence scores based on data quality
 
-### Error Handling
-- Use `st.error()`, `st.warning()`, `st.info()` for user feedback
-- Log marketplace API errors with context (marketplace, operation, timestamp)
+### File Processing
+- **Excel**: Use `openpyxl` for complex operations, `pandas` for simple read/write
+- **Large files**: Stream processing, avoid loading entire files into memory
+- **Uploads**: Validate size and format before processing
+
+## Error Handling Requirements
+
+### User Feedback
+- Always provide clear error messages in Russian for UI
+- Log technical details in English with context (marketplace, operation, timestamp)
 - Implement graceful degradation for missing marketplace data
-
-## Cross-Marketplace Rules
-
-### Product Linking
-- Barcodes are the primary linking mechanism - validate format before processing
-- Support bidirectional linking (OZ→WB and WB→OZ)
-- Handle duplicate barcodes by prioritizing most recent data
-- Maintain link confidence scores based on data quality
-
-### Data Synchronization
-- Always check for existing links before creating new ones
-- Update link timestamps on data refresh
-- Handle marketplace-specific data formats and encoding differences
-- Preserve original marketplace data alongside normalized versions
-
-## UI/UX Conventions
-
-### Streamlit Components
-- Use consistent sidebar navigation with marketplace filters
-- Implement data tables with sorting and filtering capabilities
-- Show processing progress for operations >2 seconds
-- Use expandable sections for detailed configuration options
-
-### Russian Language Support
-- Handle Cyrillic text encoding properly in all data operations
-- Use Russian labels in UI while maintaining English code comments
-- Support both Russian and English search terms in product matching
-
-## Performance Considerations
+- Use try-catch blocks with specific error types
 
 ### Data Processing
+- Validate marketplace data format before processing
+- Handle duplicate barcodes by prioritizing most recent data
+- Preserve original data alongside normalized versions
 - Batch process large datasets (>10k records) with progress indicators
-- Use DuckDB for analytical queries, avoid loading large datasets into memory
-- Implement pagination for large result sets in UI
-- Cache frequently accessed marketplace data
+
+## Performance Rules
 
 ### Memory Management
-- Stream large Excel files instead of loading entirely into memory
-- Use generators for processing large product catalogs
+- Use generators for large product catalogs
 - Clear Streamlit cache when switching between large datasets
+- Implement pagination for large result sets
+- Cache frequently accessed marketplace data
 
-## Security & Data Handling
+### Database Queries
+- Use DuckDB for analytical queries, avoid loading large datasets into memory
+- Implement connection pooling for concurrent operations
+- Index on barcode fields for cross-marketplace linking
 
-### Marketplace Data
+## Security Requirements
+
+### Data Protection
 - Never expose API keys or credentials in logs or UI
-- Sanitize user inputs for database queries and file operations
-- Validate file uploads for size and format before processing
-- Handle PII in marketplace data according to data protection requirements
+- Sanitize all user inputs for database queries and file operations
+- Handle PII according to data protection requirements
+- Validate file uploads for security threats

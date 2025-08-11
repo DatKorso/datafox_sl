@@ -27,6 +27,13 @@ DEFAULT_CONFIG = {
     },
     "data_filters": {
         "oz_category_products_brands": ""
+    },
+    "margin_calculation": {
+        "commission_percent": 36.0,
+        "acquiring_percent": 0.0,
+        "advertising_percent": 3.0,
+        "vat_percent": 20.0,
+        "exchange_rate": 90.0
     }
 }
 
@@ -163,6 +170,192 @@ def set_data_filter(filter_key: str, filter_value: str) -> None:
     For example: filter_key='oz_category_products_brands', filter_value='Shuzzi;Nike;Adidas'
     """
     update_config_value("data_filters", filter_value, sub_key=filter_key)
+
+# --- Helper functions for margin calculation configuration ---
+
+def get_margin_config() -> dict:
+    """
+    Returns the complete margin calculation configuration dictionary.
+    Enhanced with validation and error handling.
+    If margin_calculation section doesn't exist, returns default values.
+    
+    Returns:
+        dict: Dictionary containing all margin calculation parameters.
+    """
+    try:
+        config = get_config_value("margin_calculation", default=DEFAULT_CONFIG["margin_calculation"])
+        
+        # Validate that config is a dictionary
+        if not isinstance(config, dict):
+            print(f"DEBUG: margin_calculation config is not a dict: {type(config)}")
+            return DEFAULT_CONFIG["margin_calculation"].copy()
+        
+        # Ensure all required keys exist with valid values
+        validated_config = {}
+        default_margin_config = DEFAULT_CONFIG["margin_calculation"]
+        
+        for key, default_value in default_margin_config.items():
+            try:
+                value = config.get(key, default_value)
+                
+                # Validate value is numeric
+                if value is None:
+                    validated_config[key] = default_value
+                elif isinstance(value, (int, float)):
+                    validated_config[key] = float(value)
+                else:
+                    # Try to convert to float
+                    validated_config[key] = float(value)
+                    
+            except (ValueError, TypeError):
+                print(f"DEBUG: Invalid margin config value for {key}: {config.get(key)}, using default {default_value}")
+                validated_config[key] = default_value
+        
+        return validated_config
+        
+    except Exception as e:
+        print(f"DEBUG: Error loading margin config: {e}")
+        return DEFAULT_CONFIG["margin_calculation"].copy()
+
+def set_margin_config(config: dict) -> None:
+    """
+    Sets and saves the complete margin calculation configuration.
+    Enhanced with validation and error handling.
+    
+    Args:
+        config (dict): Dictionary containing margin calculation parameters.
+                      Should include: commission_percent, acquiring_percent, 
+                      advertising_percent, vat_percent, exchange_rate
+    """
+    try:
+        if not isinstance(config, dict):
+            raise ValueError(f"Config must be a dictionary, got {type(config)}")
+        
+        # Validate and sanitize the configuration
+        validated_config = {}
+        default_margin_config = DEFAULT_CONFIG["margin_calculation"]
+        
+        for key, default_value in default_margin_config.items():
+            try:
+                value = config.get(key, default_value)
+                
+                # Convert to float and validate range
+                float_value = float(value)
+                
+                # Validate reasonable ranges for each parameter
+                if key in ['commission_percent', 'acquiring_percent', 'advertising_percent', 'vat_percent']:
+                    if not (0 <= float_value <= 100):
+                        print(f"DEBUG: {key} value {float_value} out of range [0,100], using default {default_value}")
+                        validated_config[key] = default_value
+                    else:
+                        validated_config[key] = float_value
+                elif key == 'exchange_rate':
+                    if not (1 <= float_value <= 1000):
+                        print(f"DEBUG: {key} value {float_value} out of range [1,1000], using default {default_value}")
+                        validated_config[key] = default_value
+                    else:
+                        validated_config[key] = float_value
+                else:
+                    validated_config[key] = float_value
+                    
+            except (ValueError, TypeError) as e:
+                print(f"DEBUG: Invalid value for {key}: {config.get(key)}, error: {e}, using default {default_value}")
+                validated_config[key] = default_value
+        
+        update_config_value("margin_calculation", validated_config)
+        
+    except Exception as e:
+        print(f"DEBUG: Error setting margin config: {e}")
+        if hasattr(st, 'error'):
+            st.error(f"Ошибка при сохранении конфигурации маржинальности: {e}")
+
+def get_margin_parameter(param_name: str, default: float = None) -> float:
+    """
+    Returns a specific margin calculation parameter value.
+    Enhanced with validation and error handling.
+    
+    Args:
+        param_name (str): Name of the parameter (commission_percent, acquiring_percent, 
+                         advertising_percent, vat_percent, exchange_rate)
+        default (float, optional): Default value if parameter not found. 
+                                  If None, uses value from DEFAULT_CONFIG.
+    
+    Returns:
+        float: The parameter value.
+    """
+    try:
+        if default is None:
+            default = DEFAULT_CONFIG["margin_calculation"].get(param_name, 0.0)
+        
+        # Validate parameter name
+        valid_params = ['commission_percent', 'acquiring_percent', 'advertising_percent', 'vat_percent', 'exchange_rate']
+        if param_name not in valid_params:
+            print(f"DEBUG: Invalid margin parameter name: {param_name}")
+            return float(default)
+        
+        value = get_config_value("margin_calculation", sub_key=param_name, default=default)
+        
+        # Validate and convert to float
+        try:
+            float_value = float(value)
+            
+            # Validate reasonable ranges
+            if param_name in ['commission_percent', 'acquiring_percent', 'advertising_percent', 'vat_percent']:
+                if not (0 <= float_value <= 100):
+                    print(f"DEBUG: {param_name} value {float_value} out of range, using default {default}")
+                    return float(default)
+            elif param_name == 'exchange_rate':
+                if not (1 <= float_value <= 1000):
+                    print(f"DEBUG: {param_name} value {float_value} out of range, using default {default}")
+                    return float(default)
+            
+            return float_value
+            
+        except (ValueError, TypeError):
+            print(f"DEBUG: Invalid {param_name} value: {value}, using default {default}")
+            return float(default)
+        
+    except Exception as e:
+        print(f"DEBUG: Error getting margin parameter {param_name}: {e}")
+        return float(default) if default is not None else 0.0
+
+def set_margin_parameter(param_name: str, value: float) -> None:
+    """
+    Sets and saves a specific margin calculation parameter.
+    Enhanced with validation and error handling.
+    
+    Args:
+        param_name (str): Name of the parameter (commission_percent, acquiring_percent,
+                         advertising_percent, vat_percent, exchange_rate)
+        value (float): The new parameter value.
+    """
+    try:
+        # Validate parameter name
+        valid_params = ['commission_percent', 'acquiring_percent', 'advertising_percent', 'vat_percent', 'exchange_rate']
+        if param_name not in valid_params:
+            raise ValueError(f"Invalid parameter name: {param_name}. Valid parameters: {valid_params}")
+        
+        # Validate and convert value
+        try:
+            float_value = float(value)
+        except (ValueError, TypeError):
+            raise ValueError(f"Parameter value must be numeric, got {type(value)}: {value}")
+        
+        # Validate reasonable ranges
+        if param_name in ['commission_percent', 'acquiring_percent', 'advertising_percent', 'vat_percent']:
+            if not (0 <= float_value <= 100):
+                raise ValueError(f"{param_name} must be between 0 and 100, got {float_value}")
+        elif param_name == 'exchange_rate':
+            if not (1 <= float_value <= 1000):
+                raise ValueError(f"{param_name} must be between 1 and 1000, got {float_value}")
+        
+        update_config_value("margin_calculation", float_value, sub_key=param_name)
+        
+    except Exception as e:
+        print(f"DEBUG: Error setting margin parameter {param_name}: {e}")
+        if hasattr(st, 'error'):
+            st.error(f"Ошибка при сохранении параметра {param_name}: {e}")
+        raise
 
 if __name__ == '__main__':
     # Example usage and basic test for configuration utilities

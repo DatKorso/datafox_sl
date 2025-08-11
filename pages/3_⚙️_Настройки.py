@@ -78,6 +78,158 @@ with st.expander("Database Configuration", expanded=True):
                 else:
                     st.error(f"Could not create or connect to database at: {db_path_new}")
 
+# --- Margin Calculation Parameters ---
+with st.expander("Margin Calculation Parameters"):
+    st.subheader("Настройки расчета маржинальности")
+    st.info("Настройте параметры для расчета маржинальности товаров в менеджере рекламы Ozon.")
+    
+    # Load current margin configuration
+    margin_config = config_utils.get_margin_config()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        commission_current = margin_config.get("commission_percent", 36.0)
+        commission_new = st.number_input(
+            "Комиссия (%)", 
+            value=commission_current, 
+            min_value=0.0, 
+            max_value=100.0, 
+            step=0.1,
+            help="Процент комиссии маркетплейса Ozon. По умолчанию: 36%"
+        )
+        
+        acquiring_current = margin_config.get("acquiring_percent", 0.0)
+        acquiring_new = st.number_input(
+            "Эквайринг (%)", 
+            value=acquiring_current, 
+            min_value=0.0, 
+            max_value=100.0, 
+            step=0.1,
+            help="Процент эквайринга (банковские комиссии). По умолчанию: 0%"
+        )
+        
+        advertising_current = margin_config.get("advertising_percent", 3.0)
+        advertising_new = st.number_input(
+            "Реклама (%)", 
+            value=advertising_current, 
+            min_value=0.0, 
+            max_value=100.0, 
+            step=0.1,
+            help="Процент затрат на рекламу. По умолчанию: 3%"
+        )
+    
+    with col2:
+        vat_current = margin_config.get("vat_percent", 20.0)
+        vat_new = st.number_input(
+            "НДС (%)", 
+            value=vat_current, 
+            min_value=0.0, 
+            max_value=100.0, 
+            step=0.1,
+            help="Процент налога на добавленную стоимость. По умолчанию: 20%"
+        )
+        
+        exchange_rate_current = margin_config.get("exchange_rate", 90.0)
+        exchange_rate_new = st.number_input(
+            "Курс валюты (руб/USD)", 
+            value=exchange_rate_current, 
+            min_value=1.0, 
+            max_value=1000.0, 
+            step=0.1,
+            help="Курс доллара к рублю для конвертации себестоимости. По умолчанию: 90"
+        )
+    
+    # Display current formula for reference
+    st.markdown("**Формула расчета маржинальности:**")
+    st.code("""
+margin = (((oz_price/(1+VAT/100) - (oz_price*((Commission+Acquiring+Advertising)/100))/1.2)/ExchangeRate) - cost_price_usd) / cost_price_usd * 100
+    """, language="text")
+    
+    # Test calculation button
+    if st.button("🧮 Тестовый расчет", key="test_margin_calculation"):
+        test_oz_price = 1000.0  # Test price in rubles
+        test_cost_usd = 5.0     # Test cost in USD
+        
+        try:
+            # Calculate using current form values
+            vat_decimal = vat_new / 100
+            commission_sum = (commission_new + acquiring_new + advertising_new) / 100
+            
+            # Apply the formula
+            price_after_vat = test_oz_price / (1 + vat_decimal)
+            commission_amount = test_oz_price * commission_sum / 1.2
+            net_price_rub = price_after_vat - commission_amount
+            net_price_usd = net_price_rub / exchange_rate_new
+            margin_decimal = (net_price_usd - test_cost_usd) / test_cost_usd
+            margin_percent = margin_decimal * 100
+            
+            st.success(f"✅ Тестовый расчет: при цене {test_oz_price} руб и себестоимости ${test_cost_usd} маржинальность составит {margin_percent:.1f}%")
+            
+            # Show calculation breakdown
+            with st.expander("Детали расчета"):
+                st.write(f"• Цена товара: {test_oz_price} руб")
+                st.write(f"• Цена без НДС: {price_after_vat:.2f} руб")
+                st.write(f"• Комиссии: {commission_amount:.2f} руб")
+                st.write(f"• Чистая выручка: {net_price_rub:.2f} руб")
+                st.write(f"• Чистая выручка в USD: ${net_price_usd:.2f}")
+                st.write(f"• Себестоимость: ${test_cost_usd}")
+                st.write(f"• Маржинальность: {margin_percent:.1f}%")
+                
+        except Exception as e:
+            st.error(f"❌ Ошибка в тестовом расчете: {e}")
+    
+    # Add validation button for punta_table availability
+    if st.button("🔍 Проверить доступность данных Punta", key="validate_punta_table"):
+        try:
+            conn = get_connection()
+            if not conn:
+                st.error("❌ Нет подключения к базе данных.")
+            else:
+                # Check if punta_table exists
+                try:
+                    table_exists_query = "SELECT name FROM sqlite_master WHERE type='table' AND name='punta_table'"
+                    table_check = conn.execute(table_exists_query).fetchdf()
+                    
+                    if table_check.empty:
+                        st.warning("⚠️ Таблица punta_table не найдена в базе данных. Расчет маржинальности будет недоступен.")
+                        st.info("💡 Используйте функцию импорта Google Sheets ниже для загрузки данных Punta.")
+                    else:
+                        # Check table structure
+                        columns_query = "PRAGMA table_info(punta_table)"
+                        columns_info = conn.execute(columns_query).fetchdf()
+                        available_columns = columns_info['name'].tolist()
+                        
+                        required_columns = ['wb_sku', 'cost_price_usd']
+                        missing_columns = [col for col in required_columns if col not in available_columns]
+                        
+                        if missing_columns:
+                            st.error(f"❌ В таблице punta_table отсутствуют необходимые колонки: {', '.join(missing_columns)}")
+                        else:
+                            # Check data availability
+                            count_query = "SELECT COUNT(*) as total_rows FROM punta_table WHERE cost_price_usd IS NOT NULL AND TRIM(cost_price_usd) != ''"
+                            count_result = conn.execute(count_query).fetchdf()
+                            total_rows = count_result['total_rows'].iloc[0] if not count_result.empty else 0
+                            
+                            if total_rows == 0:
+                                st.warning("⚠️ Таблица punta_table существует, но не содержит данных о себестоимости.")
+                            else:
+                                st.success(f"✅ Таблица punta_table доступна с {total_rows} записями о себестоимости.")
+                                
+                                # Show sample data
+                                sample_query = "SELECT wb_sku, cost_price_usd FROM punta_table WHERE cost_price_usd IS NOT NULL AND TRIM(cost_price_usd) != '' LIMIT 5"
+                                sample_data = conn.execute(sample_query).fetchdf()
+                                
+                                if not sample_data.empty:
+                                    st.write("**Образец данных:**")
+                                    st.dataframe(sample_data, use_container_width=True)
+                        
+                except Exception as table_error:
+                    st.error(f"❌ Ошибка при проверке таблицы punta_table: {table_error}")
+                    
+        except Exception as e:
+            st.error(f"❌ Ошибка при проверке доступности данных Punta: {e}")
+
 # --- Marketplace Report Paths --- 
 with st.expander("Marketplace Report Paths"):
     st.subheader("Ozon Report Paths")
@@ -276,6 +428,51 @@ if st.button("Save All Settings", key="save_all_settings_button", help="Saves al
 
     # Update database path
     config_utils.set_db_path(db_path_new)
+    
+    # Update margin calculation parameters with validation
+    try:
+        margin_config_new = {
+            "commission_percent": commission_new,
+            "acquiring_percent": acquiring_new,
+            "advertising_percent": advertising_new,
+            "vat_percent": vat_new,
+            "exchange_rate": exchange_rate_new
+        }
+        
+        # Validate margin configuration before saving
+        validation_errors = []
+        
+        if not (0 <= commission_new <= 100):
+            validation_errors.append(f"Комиссия должна быть от 0% до 100%, получено: {commission_new}%")
+        
+        if not (0 <= acquiring_new <= 100):
+            validation_errors.append(f"Эквайринг должен быть от 0% до 100%, получено: {acquiring_new}%")
+        
+        if not (0 <= advertising_new <= 100):
+            validation_errors.append(f"Реклама должна быть от 0% до 100%, получено: {advertising_new}%")
+        
+        if not (0 <= vat_new <= 100):
+            validation_errors.append(f"НДС должен быть от 0% до 100%, получено: {vat_new}%")
+        
+        if not (1 <= exchange_rate_new <= 1000):
+            validation_errors.append(f"Курс валюты должен быть от 1 до 1000, получено: {exchange_rate_new}")
+        
+        # Check if total fees are reasonable
+        total_fees = commission_new + acquiring_new + advertising_new
+        if total_fees > 80:
+            validation_errors.append(f"Общая сумма комиссий ({total_fees:.1f}%) кажется слишком высокой")
+        
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"❌ {error}")
+            st.warning("⚠️ Параметры маржинальности не сохранены из-за ошибок валидации.")
+        else:
+            config_utils.set_margin_config(margin_config_new)
+            st.success("✅ Параметры маржинальности сохранены успешно.")
+            
+    except Exception as e:
+        st.error(f"❌ Ошибка при сохранении параметров маржинальности: {e}")
+        print(f"DEBUG: Error saving margin config: {e}")
     
     # Update Ozon report paths
     config_utils.set_report_path("oz_barcodes_xlsx", oz_barcodes_new)
