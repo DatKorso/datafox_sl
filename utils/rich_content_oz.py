@@ -482,7 +482,7 @@ class ProductDataCollector:
     def find_similar_products_candidates(self, source_product: ProductInfo) -> List[ProductInfo]:
         """
         Поиск кандидатов для рекомендаций по обязательным критериям
-        ОПТИМИЗИРОВАНО: быстрый поиск без punta данных, которые добавляются потом
+        ОБНОВЛЕНО: добавлена фильтрация по wb_sku и строгое совпадение размеров
         
         Args:
             source_product: Исходный товар для поиска похожих
@@ -499,10 +499,53 @@ class ProductDataCollector:
                 logger.warning(f"   type: {source_product.type}, gender: {source_product.gender}, brand: {source_product.oz_brand}")
                 return []
             
-            logger.info(f"📊 Критерии поиска - тип: {source_product.type}, пол: {source_product.gender}, бренд: {source_product.oz_brand}")
+            # Проверяем наличие размера у исходного товара
+            if not source_product.russian_size:
+                logger.warning(f"❌ У исходного товара {source_product.oz_vendor_code} отсутствует размер")
+                return []
             
-            # ОПТИМИЗИРОВАННЫЙ запрос - без сложных JOIN по штрихкодам
-            query = """
+            logger.info(f"📊 Критерии поиска - тип: {source_product.type}, пол: {source_product.gender}, бренд: {source_product.oz_brand}, размер: {source_product.russian_size}")
+            
+            # Получаем wb_sku исходного товара для исключения дублей
+            source_wb_sku = None
+            try:
+                linked_df = self.marketplace_linker._normalize_and_merge_barcodes(
+                    oz_vendor_codes=[source_product.oz_vendor_code]
+                )
+                if not linked_df.empty:
+                    # Берем первый найденный wb_sku
+                    first_link = linked_df.iloc[0]
+                    source_wb_sku = int(first_link['wb_sku'])
+                    logger.info(f"🔗 Найден wb_sku исходного товара: {source_wb_sku}")
+                else:
+                    logger.info(f"⚠️ wb_sku не найден для исходного товара {source_product.oz_vendor_code}")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка получения wb_sku для исходного товара: {e}")
+            
+            # Составляем SQL запрос с учетом новых требований
+            query_conditions = [
+                "ocp.type = ?",
+                "ocp.gender = ?", 
+                "ocp.oz_brand = ?",
+                "ocp.oz_vendor_code != ?",
+                "COALESCE(op.oz_fbo_stock, 0) > 0",
+                "ocp.russian_size = ?"  # Строгое совпадение размеров
+            ]
+            
+            query_params = [
+                source_product.type,
+                source_product.gender,
+                source_product.oz_brand,
+                source_product.oz_vendor_code,
+                source_product.russian_size
+            ]
+            
+            # Для упрощения и надежности уберем сложную фильтрацию на уровне SQL
+            # Основная фильтрация дублей wb_sku будет происходить позже после обогащения данными
+            if source_wb_sku:
+                logger.info(f"🔗 wb_sku исходного товара: {source_wb_sku} (фильтрация дублей будет выполнена после обогащения данными)")
+            
+            query = f"""
             SELECT 
                 ocp.oz_vendor_code,
                 ocp.product_name,
@@ -517,28 +560,20 @@ class ProductDataCollector:
                 COALESCE(op.oz_fbo_stock, 0) as oz_fbo_stock
             FROM oz_category_products ocp
             LEFT JOIN oz_products op ON ocp.oz_vendor_code = op.oz_vendor_code
-            WHERE ocp.type = ?
-            AND ocp.gender = ?
-            AND ocp.oz_brand = ?
-            AND ocp.oz_vendor_code != ?
-            AND COALESCE(op.oz_fbo_stock, 0) > 0
+            WHERE {' AND '.join(query_conditions)}
+            ORDER BY COALESCE(op.oz_fbo_stock, 0) DESC
             """
             
-            logger.info(f"⏳ Выполняем оптимизированный SQL запрос поиска кандидатов")
+            logger.info(f"⏳ Выполняем улучшенный SQL запрос поиска кандидатов")
             query_start = time.time()
             
-            results = self.db_conn.execute(query, [
-                source_product.type,
-                source_product.gender, 
-                source_product.oz_brand,
-                source_product.oz_vendor_code
-            ]).fetchall()
+            results = self.db_conn.execute(query, query_params).fetchall()
             
             query_time = time.time() - query_start
-            logger.info(f"✅ Оптимизированный SQL запрос выполнен за {query_time:.2f}с, получено {len(results)} строк")
+            logger.info(f"✅ Улучшенный SQL запрос выполнен за {query_time:.2f}с, получено {len(results)} строк")
             
             if not results:
-                logger.warning(f"❌ Кандидаты не найдены в базе данных")
+                logger.warning(f"❌ Кандидаты не найдены в базе данных с новыми фильтрами")
                 return []
             
             logger.info(f"📊 Создаем базовые ProductInfo объекты для {len(results)} кандидатов")
@@ -784,6 +819,21 @@ class RecommendationEngine:
             step_time = time.time() - step_start
             logger.info(f"✅ Обогащение завершено за {step_time:.2f}с")
             
+            # Дополнительная фильтрация по wb_sku после обогащения данными
+            logger.info(f"🚫 Дополнительная фильтрация по wb_sku дублям")
+            source_wb_sku = source_product.wb_sku
+            if source_wb_sku:
+                logger.info(f"🔗 wb_sku исходного товара: {source_wb_sku}")
+                # Исключаем товары с таким же wb_sku из обогащенных данных
+                filtered_products = [
+                    p for p in enriched_products 
+                    if p.wb_sku != source_wb_sku or p.wb_sku is None
+                ]
+                excluded_count = len(enriched_products) - len(filtered_products)
+                if excluded_count > 0:
+                    logger.info(f"🚫 Исключено {excluded_count} товаров с дублирующим wb_sku = {source_wb_sku}")
+                enriched_products = filtered_products
+            
             # Пересчитываем score с учетом punta данных для финальных кандидатов
             logger.info(f"🔄 Пересчитываем score с учетом punta данных")
             step_start = time.time()
@@ -905,29 +955,17 @@ class RecommendationEngine:
         return min(score, self.config.max_score)
     
     def _calculate_size_score(self, source: ProductInfo, candidate: ProductInfo) -> float:
-        """Вычисление score за размер"""
+        """
+        Вычисление score за размер
+        ОБНОВЛЕНО: теперь всегда возвращает максимальный бонус, так как кандидаты 
+        уже отфильтрованы по точному совпадению размеров
+        """
         if not source.russian_size or not candidate.russian_size:
             return self.config.size_mismatch_penalty
         
-        try:
-            source_size = float(source.russian_size.replace(',', '.'))
-            candidate_size = float(candidate.russian_size.replace(',', '.'))
-            
-            size_diff = abs(candidate_size - source_size)
-            
-            if size_diff == 0:
-                return self.config.exact_size_weight
-            elif size_diff <= 1:
-                return self.config.close_size_weight
-            else:
-                return self.config.size_mismatch_penalty
-                
-        except (ValueError, AttributeError):
-            # Если размеры не числовые, сравниваем как строки
-            if source.russian_size == candidate.russian_size:
-                return self.config.exact_size_weight
-            else:
-                return self.config.size_mismatch_penalty
+        # Поскольку кандидаты уже отфильтрованы по строгому совпадению размеров в SQL запросе,
+        # мы можем сразу возвращать максимальный бонус за точное совпадение
+        return self.config.exact_size_weight
     
     def _calculate_season_score(self, source: ProductInfo, candidate: ProductInfo) -> float:
         """Вычисление score за сезон"""

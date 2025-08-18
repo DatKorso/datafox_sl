@@ -9,27 +9,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Start Commands
 
 ```bash
-# Start the Streamlit application
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the Streamlit application (default port 8501)
 streamlit run app.py
 
 # Development mode with auto-reload
-streamlit run app.py --server.port 8501 --server.runOnSave true
+streamlit run app.py --server.runOnSave true
 
-# Install dependencies
-pip install -r requirements.txt
+# Start with custom port
+streamlit run app.py --server.port 8502
 
 # Reset database schema (if needed)
 python -c "from utils.db_schema import setup_database; setup_database()"
 ```
 
-## Critical Development Commands
+## Testing and Development Commands
 
 ```bash
+# Run tests (pytest framework)
+python -m pytest tests/                    # All tests
+python -m pytest tests/unit/              # Unit tests only
+python -m pytest tests/unit/test_rich_content_processor.py  # Single test file
+python -m pytest -v -s tests/             # Verbose output with prints
+
 # Database operations
 python -c "from utils.db_connection import connect_db; print('DB Status:', connect_db() is not None)"
 
 # Rich Content processing (CLI)
-python utils/export_rich_content.py  # Emergency export for large datasets
+python utils/export_rich_content.py       # Emergency export for large datasets
 python utils/emergency_rich_content_export.py  # Memory-safe export
 
 # Data validation
@@ -44,6 +53,7 @@ python -c "import duckdb; print('DuckDB Version:', duckdb.__version__)"
 - Configuration: Copy `config.example.json` to `config.json`
 - Schema: Managed through `utils/db_schema.py` with auto-migration
 - Performance: Connection pooling via `@st.cache_resource`
+- Streamlit config: `.streamlit/config.toml` (optimized for large data processing)
 
 ## High-Level Architecture
 
@@ -110,11 +120,19 @@ Cross-marketplace search, quality control, analytics engine, advanced grouping, 
 
 ### Testing Strategy
 
+**Test Framework:** pytest with comprehensive fixtures in `tests/conftest.py`
+
 **Data Validation:**
 - Test with sample data in `marketplace_reports/ozon/CustomFiles/`
 - Validate barcode linking between marketplaces
 - Test Rich Content JSON generation and validation
 - Verify database schema migrations
+
+**Unit Testing:**
+- Rich Content processor modules have comprehensive test coverage
+- Mock database fixtures for isolated testing
+- Test scoring algorithms and recommendation engines
+- Validate data collection and processing logic
 
 **Performance Testing:**
 - Test with datasets >10K records
