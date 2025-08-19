@@ -110,7 +110,6 @@ HARDCODED_SCHEMA = {
             {'target_col_name': 'hashtags', 'sql_type': 'TEXT', 'source_col_name': '#Хештеги', 'notes': None},
             {'target_col_name': 'annotation', 'sql_type': 'TEXT', 'source_col_name': 'Аннотация', 'notes': None},
             {'target_col_name': 'rich_content_json', 'sql_type': 'TEXT', 'source_col_name': 'Rich-контент JSON', 'notes': None},
-            {'target_col_name': 'keywords', 'sql_type': 'TEXT', 'source_col_name': 'Ключевые слова', 'notes': None},
             {'target_col_name': 'country_of_origin', 'sql_type': 'VARCHAR', 'source_col_name': 'Страна-изготовитель', 'notes': None},
             {'target_col_name': 'material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал', 'notes': None},
             {'target_col_name': 'upper_material', 'sql_type': 'VARCHAR', 'source_col_name': 'Материал верха', 'notes': None},
