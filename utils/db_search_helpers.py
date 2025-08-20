@@ -4,6 +4,137 @@ import pandas as pd
 
 # --- Cross-Marketplace Search Helper Functions ---
 
+def search_table_globally(
+    con: duckdb.DuckDBPyConnection, 
+    table_name: str, 
+    search_query: str, 
+    search_columns: list = None,
+    limit: int = 1000
+) -> tuple[pd.DataFrame, int]:
+    """
+    Performs a global search across all text columns in a specified table.
+    
+    Args:
+        con: Active DuckDB connection
+        table_name: Name of the table to search in
+        search_query: The search text to look for
+        search_columns: Specific columns to search in (if None, searches all text columns)
+        limit: Maximum number of results to return
+        
+    Returns:
+        tuple: (results_dataframe, total_matches_count)
+    """
+    if not con:
+        st.error("Database connection not available for search.")
+        return pd.DataFrame(), 0
+        
+    if not search_query or not search_query.strip():
+        st.info("Please enter a search query.")
+        return pd.DataFrame(), 0
+    
+    search_term = search_query.strip()
+    
+    try:
+        # Get all columns for the table
+        columns_query = f'PRAGMA table_info("{table_name}");'
+        columns_info = con.execute(columns_query).fetchall()
+        
+        if not columns_info:
+            st.error(f"Table '{table_name}' does not exist or has no columns.")
+            return pd.DataFrame(), 0
+            
+        all_columns = [col[1] for col in columns_info]  # col[1] is column name
+        
+        # If specific columns not provided, use all columns for search
+        if search_columns is None:
+            search_columns = all_columns
+        else:
+            # Validate that requested columns exist
+            search_columns = [col for col in search_columns if col in all_columns]
+            
+        if not search_columns:
+            st.warning("No valid search columns found.")
+            return pd.DataFrame(), 0
+        
+        # Sanitize search term to prevent SQL injection
+        # Escape single quotes and limit length
+        search_term = search_term.replace("'", "''")[:500]  # Limit to 500 chars
+        
+        # Build search conditions for each column (case-insensitive)
+        search_conditions = []
+        for col in search_columns:
+            # Use CAST to convert all columns to VARCHAR for searching
+            search_conditions.append(f"CAST(\"{col}\" AS VARCHAR) ILIKE ?")
+        
+        # Create the search query
+        where_clause = " OR ".join(search_conditions)
+        search_params = [f'%{search_term}%'] * len(search_columns)
+        
+        # First get total count
+        count_query = f'SELECT COUNT(*) FROM "{table_name}" WHERE {where_clause};'
+        total_count = con.execute(count_query, search_params).fetchone()[0]
+        
+        if total_count == 0:
+            st.info(f"No matches found for '{search_term}' in table '{table_name}'")
+            return pd.DataFrame(), 0
+        
+        # Get the actual results
+        columns_str = ', '.join([f'"{col}"' for col in all_columns])
+        results_query = f'''
+            SELECT {columns_str}
+            FROM "{table_name}"
+            WHERE {where_clause}
+            ORDER BY 1
+            LIMIT {limit};
+        '''
+        
+        results_df = con.execute(results_query, search_params).fetchdf()
+        
+        return results_df, total_count
+        
+    except Exception as e:
+        st.error(f"Error performing search in table '{table_name}': {e}")
+        return pd.DataFrame(), 0
+
+def get_searchable_columns(con: duckdb.DuckDBPyConnection, table_name: str) -> list[str]:
+    """
+    Gets list of columns that are suitable for text search in a given table.
+    Excludes large text fields that might slow down search.
+    
+    Args:
+        con: Active DuckDB connection
+        table_name: Name of the table
+        
+    Returns:
+        list: List of column names suitable for search
+    """
+    if not con:
+        return []
+        
+    try:
+        # Get column information
+        columns_query = f'PRAGMA table_info("{table_name}");'
+        columns_info = con.execute(columns_query).fetchall()
+        
+        all_columns = [col[1] for col in columns_info]  # col[1] is column name
+        
+        # Exclude large text columns that might slow down search
+        large_text_columns = [
+            'annotation', 'rich_content_json', 'additional_photos_urls', 
+            'photo_360_urls', 'hashtags', 'keywords', 'size_info', 
+            'model_features', 'decorative_elements', 'size_table_json',
+            'error', 'warning'
+        ]
+        
+        # Return columns that are not in the exclusion list
+        searchable_columns = [col for col in all_columns if col not in large_text_columns]
+        
+        return searchable_columns
+        
+    except Exception as e:
+        st.warning(f"Error getting searchable columns for table '{table_name}': {e}")
+        return []
+
 def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str] = None) -> pd.DataFrame:
     """
     Retrieves Wildberries products and normalizes their barcodes.

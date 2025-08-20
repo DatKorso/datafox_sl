@@ -16,6 +16,7 @@ from utils.config_utils import get_db_path, load_config
 from utils.db_connection import connect_db
 from utils.db_crud import get_all_db_tables
 from utils.db_schema import get_table_schema_definition
+from utils.db_search_helpers import search_table_globally, get_searchable_columns
 import io # For CSV download
 import math
 
@@ -64,6 +65,134 @@ else:
 
     if selected_table:
         st.subheader(f"Данные из таблицы: `{selected_table}`")
+        
+        # Search section
+        st.divider()
+        search_col1, search_col2, search_col3 = st.columns([2, 1, 1])
+        
+        with search_col1:
+            search_query = st.text_input(
+                "🔍 Поиск по всей таблице",
+                placeholder="Введите текст для поиска...",
+                key=f"search_{selected_table}",
+                help="Поиск будет выполнен по всем подходящим колонкам таблицы"
+            )
+        
+        with search_col2:
+            search_limit = st.selectbox(
+                "Максимум результатов:",
+                options=[100, 500, 1000, 2000],
+                index=0,
+                key=f"search_limit_{selected_table}"
+            )
+        
+        with search_col3:
+            # Get searchable columns for this table
+            searchable_cols = get_searchable_columns(db_connection, selected_table)
+            
+            search_clicked = st.button(
+                "🔍 Искать",
+                key=f"search_btn_{selected_table}",
+                disabled=not search_query.strip() if search_query else True,
+                help="Выполнить поиск по всей таблице"
+            )
+        
+        # Show searchable columns info
+        if searchable_cols:
+            with st.expander(f"ℹ️ Поиск по колонкам ({len(searchable_cols)})"):
+                st.write("Поиск будет выполнен по следующим колонкам:")
+                cols_display = st.columns(3)
+                for i, col in enumerate(searchable_cols):
+                    with cols_display[i % 3]:
+                        st.write(f"• `{col}`")
+        
+        # Execute search if button was clicked
+        if search_clicked:
+            if search_query.strip():
+                with st.spinner(f"Поиск '{search_query}' в таблице {selected_table}..."):
+                    search_results, total_matches = search_table_globally(
+                        db_connection, 
+                        selected_table, 
+                        search_query,
+                        search_columns=searchable_cols,
+                        limit=search_limit
+                    )
+                    
+                    if total_matches > 0:
+                        # Store search results in session state
+                        st.session_state[f"search_results_{selected_table}"] = search_results
+                        st.session_state[f"search_query_{selected_table}"] = search_query
+                        st.session_state[f"search_total_{selected_table}"] = total_matches
+                        st.session_state[f"search_active_{selected_table}"] = True
+                    else:
+                        # Clear search results if no matches
+                        st.session_state.pop(f"search_results_{selected_table}", None)
+                        st.session_state.pop(f"search_active_{selected_table}", None)
+        
+        # Display search results if they exist
+        search_active = st.session_state.get(f"search_active_{selected_table}", False)
+        if search_active:
+            search_results = st.session_state.get(f"search_results_{selected_table}")
+            search_query_used = st.session_state.get(f"search_query_{selected_table}")
+            total_matches = st.session_state.get(f"search_total_{selected_table}", 0)
+            
+            if search_results is not None and not search_results.empty:
+                st.success(f"✅ Найдено {total_matches} совпадений для '{search_query_used}'")
+                
+                # Search results actions
+                search_actions_col1, search_actions_col2, search_actions_col3 = st.columns([1, 1, 2])
+                
+                with search_actions_col1:
+                    if st.button("❌ Очистить поиск", key=f"clear_search_{selected_table}"):
+                        st.session_state.pop(f"search_results_{selected_table}", None)
+                        st.session_state.pop(f"search_active_{selected_table}", None)
+                        st.session_state.pop(f"search_query_{selected_table}", None)
+                        st.session_state.pop(f"search_total_{selected_table}", None)
+                        st.rerun()
+                
+                with search_actions_col2:
+                    # Show result count info
+                    shown_results = len(search_results)
+                    if total_matches > shown_results:
+                        st.info(f"📋 Показано {shown_results} из {total_matches}")
+                    else:
+                        st.info(f"📋 Всего результатов: {shown_results}")
+                
+                with search_actions_col3:
+                    if total_matches > search_limit:
+                        st.warning(f"⚠️ Найдено больше результатов. Увеличьте лимит для просмотра всех.")
+                
+                st.subheader(f"🔍 Результаты поиска: '{search_query_used}'")
+                
+                # Display search results with highlighting-like styling
+                st.markdown(f"""
+                <div style="background-color: #f0f8ff; padding: 10px; border-radius: 5px; border-left: 4px solid #1f77b4;">
+                    <strong>💡 Совет:</strong> Используйте встроенный поиск Streamlit (Ctrl+F / ⌘+F) для поиска по отображенным результатам
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.dataframe(
+                    search_results, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    height=400
+                )
+                
+                # Download search results
+                search_csv_buffer = io.StringIO()
+                search_results.to_csv(search_csv_buffer, index=False, sep=';')
+                search_csv_data = search_csv_buffer.getvalue()
+                
+                st.download_button(
+                    label=f"📥 Скачать результаты поиска ({len(search_results)} записей)",
+                    data=search_csv_data,
+                    file_name=f"{selected_table}_search_{search_query_used.replace(' ', '_')}.csv",
+                    mime="text/csv",
+                    key=f"download_search_{selected_table}"
+                )
+                
+                st.divider()
+                st.subheader("📊 Обычный просмотр таблицы")
         
         # Configuration section
         col1, col2, col3 = st.columns([1, 1, 2])
