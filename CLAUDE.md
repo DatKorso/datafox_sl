@@ -254,34 +254,17 @@ python -c "from utils.db_connection import connect_db; print('DB Ready')"
 
 ### Critical File Dependencies
 
-**Core Dependencies:**
-- `utils/cross_marketplace_linker.py` - WB↔Ozon product linking
-- `utils/db_connection.py` - Database connection management
-- `utils/rich_content_oz.py` - Rich Content generation engine
-- `utils/db_schema.py` - Database schema management
-- `utils/config_utils.py` - Configuration management and persistence
-- `utils/data_cleaning.py` - Data validation and cleaning utilities
-
-**Advanced Components:**
-- `utils/wb_recommendations.py` - WB product recommendation engine
-- `utils/manual_recommendations_manager.py` - Manual recommendation management
-- `utils/advanced_product_grouper.py` - Enhanced product grouping with rating compensation
-- `utils/oz_to_wb_collector.py` - Cross-marketplace SKU collection
-- `utils/wb_photo_service.py` - WB image URL generation and validation
-- `utils/analytic_report_helpers.py` - Excel analytics processing
-- `utils/google_sheets_utils.py` - Google Sheets integration
-- `utils/db_migration.py` - Database schema migration utilities
-- `utils/db_cleanup.py` - Database optimization and cleanup tools
-
-**Page Dependencies:**
-- Rich Content: `pages/11_🚧_Rich_Контент_OZ.py` + `utils/rich_content_oz_ui.py`
-- WB Recommendations: `pages/16_🎯_Рекомендации_WB.py` + `utils/wb_recommendations.py`
-- Advanced Grouping: `pages/14_🎯_Улучшенная_Группировка_Товаров.py` + `utils/advanced_product_grouper.py`
-- Cards Matching: `pages/10_🚧_Склейка_Карточек_OZ.py` + `utils/cards_matcher_helpers.py`
-- Search: `pages/5_🔎_Поиск_Между_МП.py` + `utils/db_search_helpers.py`
-- Analytics: `pages/8_📋_Аналитический_Отчет_OZ.py` + `utils/analytic_report_helpers.py`
-- Data Collection: `pages/13_🔗_Сбор_WB_SKU_по_Озон.py` + `utils/oz_to_wb_collector.py`
-- Excel Tools: `pages/15_📊_Объединение_Excel.py`, `pages/17_📊_Дробление_Excel.py`
+| Component | Core Utils | Page Integration |
+|-----------|------------|------------------|
+| **Database** | `db_connection.py`, `db_schema.py`, `db_migration.py` | All pages |
+| **Cross-Linking** | `cross_marketplace_linker.py` | `5_🔎_Поиск_Между_МП.py` |
+| **Rich Content** | `rich_content_oz.py`, `rich_content_oz_ui.py` | `11_🚧_Rich_Контент_OZ.py` |
+| **WB Recommendations** | `wb_recommendations.py`, `manual_recommendations_manager.py` | `16_🎯_Рекомендации_WB.py` |
+| **Advanced Grouping** | `advanced_product_grouper.py` | `14_🎯_Улучшенная_Группировка_Товаров.py` |
+| **Analytics** | `analytic_report_helpers.py` | `8_📋_Аналитический_Отчет_OZ.py` |
+| **Data Processing** | `data_cleaning.py`, `oz_to_wb_collector.py` | `13_🔗_Сбор_WB_SKU_по_Озон.py` |
+| **External Integration** | `google_sheets_utils.py`, `wb_photo_service.py` | Multiple pages |
+| **Excel Tools** | Built-in pandas | `15_📊_Объединение_Excel.py`, `17_📊_Дробление_Excel.py` |
 
 ### Emergency Procedures
 
@@ -313,83 +296,59 @@ print(f"Connection: {conn}")
 
 ### Cross-Marketplace Linking
 
-**Always Use CrossMarketplaceLinker:**
+**CrossMarketplaceLinker:**
 ```python
 from utils.cross_marketplace_linker import CrossMarketplaceLinker
 
-# Initialize with database connection
 linker = CrossMarketplaceLinker(db_conn)
-
-# Link products via barcodes
 linked_products = linker.find_linked_products(
-    oz_vendor_codes=['CODE1', 'CODE2'],
-    include_wb_data=True
-)
+    oz_vendor_codes=['CODE1', 'CODE2'], include_wb_data=True)
 ```
 
 ### WB Recommendations Engine
 
-**For Product Recommendations:**
+**WB Recommendations:**
 ```python
 from utils.wb_recommendations import WBRecommendationEngine
 from utils.manual_recommendations_manager import ManualRecommendationsManager
 
-# Initialize recommendation engine
 engine = WBRecommendationEngine(db_conn, config)
-
-# Setup manual recommendations (optional)
 manual_manager = ManualRecommendationsManager()
 manual_manager.load_from_csv(manual_recommendations_path)
 
-# Get recommendations for WB SKU
 recommendations = engine.get_recommendations(
-    wb_sku="123456",
-    count=20,
-    manual_manager=manual_manager
-)
+    wb_sku="123456", count=20, manual_manager=manual_manager)
 ```
 
 ### Advanced Product Grouping
 
-**For Enhanced Grouping with Rating Compensation:**
+**Advanced Product Grouping:**
 ```python
 from utils.advanced_product_grouper import AdvancedProductGrouper, GroupingConfig
 
-# Configure grouping parameters
 config = GroupingConfig(
-    grouping_columns=['oz_brand', 'oz_category'],
-    min_group_rating=4.0,
-    max_wb_sku_per_group=5,
-    enable_sort_priority=True
-)
-
-# Initialize grouper
+    grouping_columns=['oz_brand', 'oz_category'], min_group_rating=4.0,
+    max_wb_sku_per_group=5, enable_sort_priority=True)
+    
 grouper = AdvancedProductGrouper(db_conn)
-
-# Create groups with compensation
 result = grouper.create_groups(config)
 ```
 
 ### Rich Content Generation
 
-**For Large Datasets:**
+**Rich Content Generation:**
 ```python
 from utils.rich_content_oz import RichContentProcessor
 
-# Use memory-safe mode for >1000 products
 processor = RichContentProcessor(db_conn, config)
 result = processor.process_batch_optimized(
-    vendor_codes,
-    batch_size=50,
-    processing_mode="memory_safe"
-)
+    vendor_codes, batch_size=50, processing_mode="memory_safe")
 ```
 
 ### Database Query Patterns
 
-**Efficient Cross-Table Queries:**
+**Database Queries:**
 ```python
-# Use parameterized queries
 query = """
 SELECT ocp.oz_vendor_code, op.oz_sku, op.oz_fbo_stock
 FROM oz_category_products ocp
@@ -401,21 +360,17 @@ results = conn.execute(query, [brand, min_stock]).fetchall()
 
 ### Streamlit UI Patterns
 
-**Progress Tracking:**
+**Progress & Memory Management:**
 ```python
-# Use callback pattern for long operations
+# Progress callback
 def progress_callback(current, total, message):
     progress_bar.progress(current / total)
     status_text.text(f"{current}/{total}: {message}")
 
-# Apply to batch operations
 with st.spinner("Processing..."):
     result = processor.process_batch(codes, progress_callback)
-```
 
-**Memory Management:**
-```python
-# Clear heavy objects after use
+# Memory cleanup
 if 'heavy_data' in st.session_state:
     del st.session_state.heavy_data
     st.rerun()
@@ -423,35 +378,20 @@ if 'heavy_data' in st.session_state:
 
 ### Data Processing Patterns
 
-**Google Sheets Integration:**
+**External Services:**
 ```python
+# Google Sheets
 from utils.google_sheets_utils import read_google_sheets_as_dataframe
-
-# Load data from Google Sheets
 df = read_google_sheets_as_dataframe(sheets_url)
-if df is not None:
-    # Process the data
-    pass
-```
 
-**WB Photo Service:**
-```python
+# WB Photo Service
 from utils.wb_photo_service import get_wb_photo_url, validate_wb_photo_url
-
-# Get photo URL for WB SKU
 photo_url = get_wb_photo_url("123456")
-
-# Validate URL availability
 is_valid, message = validate_wb_photo_url("123456")
-```
 
-**Database Migration:**
-```python
+# Database Migration
 from utils.db_migration import auto_migrate_if_needed
-
-# Auto-migrate database schema if needed
-migration_needed = auto_migrate_if_needed(db_conn)
-if migration_needed:
+if auto_migrate_if_needed(db_conn):
     st.info("Database schema updated successfully")
 ```
 
@@ -491,72 +431,17 @@ except ValueError as e:
 
 ## Common Issues & Solutions
 
-### Issue: "WebSocket connection failed" during large exports
-**Solution:** Use streaming export or pagination
-```python
-# Stream large exports
-def generate_export_stream():
-    for chunk in process_in_chunks(data):
-        yield chunk.to_csv()
+### Common Issues & Quick Solutions
 
-st.download_button(
-    "Download",
-    data=generate_export_stream(),
-    file_name="export.csv"
-)
-```
+| Issue | Solution | Code |
+|-------|----------|------|
+| **WebSocket fails** | Stream exports | `def generate_export_stream(): for chunk in process_in_chunks(data): yield chunk.to_csv()` |
+| **Session state too large** | Clear regularly | `if len(st.session_state.get('results', [])) > 1000: st.session_state.clear()` |
+| **Slow linking** | Batch operations | `linker._normalize_and_merge_barcodes(oz_vendor_codes=vendor_codes)` |
+| **Schema outdated** | Auto-migrate | `auto_migrate_if_needed(db_conn)` |
 
-### Issue: "Session state too large" error
-**Solution:** Clear session state regularly
-```python
-# Clear after heavy operations
-if len(st.session_state.get('results', [])) > 1000:
-    st.session_state.clear()
-    st.success("Memory cleared for better performance")
-```
-
-### Issue: Slow cross-marketplace linking
-**Solution:** Use batch operations and caching
-```python
-# Batch barcode normalization
-normalized_barcodes = linker._normalize_and_merge_barcodes(
-    oz_vendor_codes=vendor_codes  # Process all at once
-)
-```
-
-### Issue: Database schema out of date
-**Solution:** Use auto-migration
-```python
-from utils.db_migration import auto_migrate_if_needed
-auto_migrate_if_needed(db_conn)
-```
-
-### Issue: Poor WB recommendation quality
-**Solution:** Use manual recommendations and tuning
-```python
-# Load manual recommendations to override algorithm
-manual_manager = ManualRecommendationsManager()
-manual_manager.load_from_csv("manual_recommendations.csv")
-
-# Apply to recommendation engine
-recommendations = engine.get_recommendations(
-    wb_sku="123456",
-    manual_manager=manual_manager
-)
-```
-
-### Issue: Google Sheets access errors
-**Solution:** URL validation and encoding detection
-```python
-from utils.google_sheets_utils import validate_google_sheets_url, diagnose_google_sheets_encoding
-
-# Validate URL format
-if not validate_google_sheets_url(url):
-    st.error("Invalid Google Sheets URL format")
-
-# Diagnose encoding issues
-diagnosis = diagnose_google_sheets_encoding(url)
-```
+| **Poor WB recommendations** | Use manual overrides | `manual_manager = ManualRecommendationsManager(); manual_manager.load_from_csv("file.csv")` |
+| **Google Sheets errors** | Validate URLs | `validate_google_sheets_url(url); diagnose_google_sheets_encoding(url)` |
 
 ## Future Development Notes
 
@@ -582,45 +467,31 @@ diagnosis = diagnose_google_sheets_encoding(url)
 
 ## Important Reminders
 
-1. **Always test with real data** from `marketplace_reports/ozon/CustomFiles/`
-2. **Monitor memory usage** during development and production
-3. **Use batch processing** for operations >1000 records
-4. **Clear session state** after heavy operations
-5. **Follow the existing patterns** in the codebase
-6. **Document any new patterns** you create
-7. **Test cross-marketplace linking** thoroughly with real barcode data
-8. **Validate Rich Content JSON** generation and structure
-9. **Test WB recommendations** with different product categories
-10. **Validate Google Sheets integration** with various URL formats
-11. **Run database migrations** when schema changes are needed
-12. **Use proper error handling** for all external integrations
-13. **Implement progress tracking** for long-running operations
-14. **Test manual recommendations** integration and override logic
+**Data & Testing:**
+- Test with real data from `marketplace_reports/ozon/CustomFiles/`
+- Validate cross-marketplace linking with real barcode data
+- Test WB recommendations across product categories
+- Test manual recommendations integration and overrides
 
-## Module-Specific Guidelines
+**Performance & Memory:**
+- Monitor memory usage during development
+- Use batch processing for >1000 records
+- Clear session state after heavy operations
+- Implement progress tracking for long operations
 
-### WB Recommendations (`utils/wb_recommendations.py`)
-- Always validate WB SKU format before processing
-- Use manual recommendations manager for quality control
-- Implement proper caching for recommendation results
-- Monitor recommendation quality metrics
+**Integration & Quality:**
+- Run database migrations when needed
+- Use proper error handling for external integrations
+- Validate Google Sheets URLs and Rich Content JSON
+- Follow existing patterns and document new ones
 
-### Advanced Grouper (`utils/advanced_product_grouper.py`)
-- Configure grouping parameters based on business requirements
-- Monitor compensation algorithm effectiveness
-- Validate group quality before finalizing
-- Use detailed logging for troubleshooting
+## Module Guidelines
 
-### Data Cleaning (`utils/data_cleaning.py`)
-- Apply consistent cleaning rules across all data sources
-- Validate data integrity after cleaning operations
-- Monitor cleaning effectiveness with metrics
-- Handle edge cases gracefully
-
-### Google Sheets Integration (`utils/google_sheets_utils.py`)
-- Always validate URLs before attempting access
-- Handle encoding issues proactively
-- Implement proper timeout handling
-- Provide clear error messages for failed operations
+| Module | Key Practices |
+|--------|--------------|
+| **WB Recommendations** | Validate SKU format, use manual overrides, cache results, monitor quality |
+| **Advanced Grouper** | Configure parameters per business needs, monitor compensation effectiveness |
+| **Data Cleaning** | Apply consistent rules, validate integrity, handle edge cases gracefully |
+| **Google Sheets** | Validate URLs, handle encoding proactively, implement timeouts |
 
 This project handles sensitive marketplace data - ensure security, performance, and data integrity are maintained at all times.

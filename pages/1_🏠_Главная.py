@@ -93,9 +93,3 @@ elif db_path and os.path.exists(db_path) and not connection_active:
     # This case is if db_path exists but connection failed above, already handled by error message.
     # Could add a more specific message here if needed, but the above should suffice.
     pass
-
-# General guidance if no data is shown but DB is configured and connected
-if db_exists_and_configured and connection_active and stats.get('total_records', 0) == 0:
-    st.info("Database is connected, but no records found in the managed tables. You might need to import some reports first!")
-    if st.button("Go to Import Reports"):
-        st.switch_page("pages/2_Import_Reports.py") # Navigate to import page 
