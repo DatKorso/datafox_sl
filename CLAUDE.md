@@ -9,7 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Start Commands
 
 ```bash
-# Install dependencies
+# Install dependencies (UV package manager preferred)
+uv install
+# Or with pip
 pip install -r requirements.txt
 
 # Start the Streamlit application (default port 8501)
@@ -63,45 +65,78 @@ python -c "import duckdb; print('DuckDB Version:', duckdb.__version__)"
 ```
 
 **Database & Config:**
-- Database: DuckDB files in `data/` directory (auto-created)
+- Database: DuckDB files in `data/` directory (auto-created, gitignored)
 - Configuration: Copy `config.example.json` to `config.json`
 - Schema: Managed through `utils/db_schema.py` with auto-migration
 - Performance: Connection pooling via `@st.cache_resource`
-- Streamlit config: `.streamlit/config.toml` (optimized for large data processing)
+- Package Management: UV (pyproject.toml) preferred over pip (requirements.txt)
 
 ## High-Level Architecture
 
 **Core:** Streamlit-based marketplace analytics platform for Ozon and Wildberries data analysis.
 
-**Key Components:**
-- **App (`app.py`)**: Multi-page Streamlit application with sidebar navigation
-- **Pages (`pages/`)**: Standalone modules with emoji-prefixed numbering for specific functionality
-- **Utils (`utils/`)**: Core utilities including `CrossMarketplaceLinker` for barcode-based product linking between marketplaces
+### Application Architecture
+- **Entry Point**: `app.py` serves as the main Streamlit application with sidebar navigation
+- **Page System**: 17 feature pages in `pages/` directory with emoji-prefixed numbering (1-17)
+- **Core Logic**: Centralized business logic in `utils/` with 25+ specialized modules
+- **Data Storage**: DuckDB database with auto-migration and connection pooling
 
-**Cross-Marketplace Linking:**
-- Products linked between WB ↔ Ozon via shared barcodes
-- `CrossMarketplaceLinker` class handles normalization, position tracking, and primary barcode identification
-- Critical for all cross-platform analysis features
+### Critical Cross-Marketplace Linking System
+**The foundation of all analytics features:**
 
-**Data Flow:**
-1. Import marketplace reports (Excel/CSV) → DuckDB tables
-2. Cross-marketplace linking via `CrossMarketplaceLinker`
-3. Analytics and export with integrated data
+```python
+# Central linking class used across all features
+class CrossMarketplaceLinker:
+    def _normalize_and_merge_barcodes()  # Barcode normalization & joining
+    def find_linked_products()           # Main WB ↔ Ozon linking method
+```
 
-**Database Schema:**
-- **WB**: `wb_products`, `wb_prices`
-- **Ozon**: `oz_products`, `oz_barcodes`, `oz_category_products`, `oz_card_rating`, `oz_orders`
-- **Linking**: Via normalized barcodes with position tracking
+**Barcode Linking Flow:**
+1. **Normalization**: Strip spaces, validate EAN-13, position-based priority (first = primary)
+2. **Cross-Matching**: Join `wb_products.barcodes` ↔ `oz_barcodes.barcode` 
+3. **Data Enrichment**: Merge linked products with marketplace-specific attributes
+4. **Position Tracking**: Preserve barcode position for priority-based selection
 
-**Key Features:**
-- Cross-marketplace search and product linking via barcodes
-- WB product recommendation engine with manual overrides
-- Rich Content generation for Ozon marketplace optimization
-- Advanced product grouping with rating compensation algorithms
-- Analytics and reporting with Excel integration
-- Database cleanup and optimization tools
-- Google Sheets integration for external data sources
-- Memory-safe batch processing for large datasets
+### Core Engine Classes
+
+**WB Recommendation System** (`utils/wb_recommendations.py`):
+```python
+class WBRecommendationEngine:
+    def get_recommendations()  # Similarity-based product matching
+    def _calculate_similarity_score()  # Multi-factor scoring algorithm
+
+class WBProductInfo:  # Data model with Ozon enrichment
+```
+
+**Rich Content Generation** (`utils/rich_content_oz.py`):
+```python
+class RichContentProcessor:
+    def process_batch_optimized()  # Memory-safe batch processing
+    def _generate_rich_content_json()  # Ozon Rich Content JSON creation
+```
+
+**Advanced Product Grouping** (`utils/advanced_product_grouper.py`):
+```python
+class AdvancedProductGrouper:
+    def create_groups()  # Multi-criteria product clustering
+```
+
+### Data Flow Architecture
+```
+Excel/CSV Reports → Import Pages (2) → DuckDB Storage → CrossMarketplaceLinker → 
+Analytics Pages (5-17) → Export/Reports
+```
+
+**Database Schema Design:**
+- **WB Tables**: `wb_products` (characteristics), `wb_prices` (pricing/stock)
+- **Ozon Tables**: `oz_products` (master), `oz_barcodes` (linking), `oz_category_products` (enriched), `oz_orders` (transactions), `oz_card_rating` (quality)
+- **Linking Strategy**: Normalized barcode matching with position-based prioritization
+
+### Session State & Caching Strategy
+- **Connection Pooling**: `@st.cache_resource` for database connections
+- **Data Caching**: `@st.cache_data` with TTL for expensive computations  
+- **Session Management**: Minimal session state usage, aggressive cleanup after operations
+- **Memory Safety**: Batch processing for >1000 records, streaming exports >50MB
 
 ## Development Guidelines
 
@@ -235,36 +270,53 @@ python -c "from utils.db_connection import connect_db; print('DB Ready')"
 - Verify export functionality works correctly
 - Document any new patterns in `project-docs/`
 
-### Development Anti-Patterns to Avoid
+### Critical Development Rules
 
-❌ **Don't:** Store large datasets in `st.session_state`
-✅ **Do:** Use database storage with cached connections
+**ALWAYS use `CrossMarketplaceLinker` for any WB↔Ozon connections:**
+```python
+from utils.cross_marketplace_linker import CrossMarketplaceLinker
+linker = CrossMarketplaceLinker(db_conn)
+linked_products = linker.find_linked_products(oz_vendor_codes=codes)
+```
 
-❌ **Don't:** Process all data at once for large datasets
-✅ **Do:** Use batch processing with progress indicators
+**Memory Management (Critical for Streamlit):**
+- Clear session state after heavy operations: `st.session_state.clear()`
+- Use batch processing for >1000 records with progress callbacks
+- Implement streaming for exports >50MB: `yield chunk.to_csv()`
 
-❌ **Don't:** Create duplicate linking logic
-✅ **Do:** Always use `CrossMarketplaceLinker` class
+**Database Connection Pattern:**
+```python
+@st.cache_resource
+def get_database_connection():
+    return connect_db()
+```
 
-❌ **Don't:** Hardcode database paths or credentials
-✅ **Do:** Use `config.json` and environment variables
+**Error Handling with User Context:**
+```python
+try:
+    result = process_data()
+except Exception as e:
+    st.error(f"Operation failed: {e}")
+    st.info("Suggested fix: Check data format and try again.")
+```
 
-❌ **Don't:** Ignore memory constraints in Streamlit
-✅ **Do:** Implement memory-safe modes for large operations
+### Architecture Dependencies (Must understand before development)
 
-### Critical File Dependencies
+**Cross-Marketplace Foundation:**
+- `cross_marketplace_linker.py` → Used by all analytics features (pages 5-16)
+- `db_search_helpers.py` → Barcode normalization utilities for linking
+- `data_cleaning.py` → Data validation and cleaning for all imports
 
-| Component | Core Utils | Page Integration |
-|-----------|------------|------------------|
-| **Database** | `db_connection.py`, `db_schema.py`, `db_migration.py` | All pages |
-| **Cross-Linking** | `cross_marketplace_linker.py` | `5_🔎_Поиск_Между_МП.py` |
-| **Rich Content** | `rich_content_oz.py`, `rich_content_oz_ui.py` | `11_🚧_Rich_Контент_OZ.py` |
-| **WB Recommendations** | `wb_recommendations.py`, `manual_recommendations_manager.py` | `16_🎯_Рекомендации_WB.py` |
-| **Advanced Grouping** | `advanced_product_grouper.py` | `14_🎯_Улучшенная_Группировка_Товаров.py` |
-| **Analytics** | `analytic_report_helpers.py` | `8_📋_Аналитический_Отчет_OZ.py` |
-| **Data Processing** | `data_cleaning.py`, `oz_to_wb_collector.py` | `13_🔗_Сбор_WB_SKU_по_Озон.py` |
-| **External Integration** | `google_sheets_utils.py`, `wb_photo_service.py` | Multiple pages |
-| **Excel Tools** | Built-in pandas | `15_📊_Объединение_Excel.py`, `17_📊_Дробление_Excel.py` |
+**Core Business Logic:**
+- `wb_recommendations.py` + `manual_recommendations_manager.py` → WB similarity engine (page 16)
+- `rich_content_oz.py` + `rich_content_oz_ui.py` → Ozon content generation (page 11)
+- `advanced_product_grouper.py` → Multi-criteria clustering (page 14)
+- `analytic_report_helpers.py` → Excel report generation (page 8)
+
+**Database Layer:**
+- `db_connection.py` → Connection pooling (used by ALL features)
+- `db_schema.py` → Schema management & migrations
+- `db_migration.py` → Version tracking & auto-migration
 
 ### Emergency Procedures
 

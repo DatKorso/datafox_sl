@@ -72,6 +72,7 @@ class ProductInfo:
     new_last: Optional[str] = None
     mega_last: Optional[str] = None
     best_last: Optional[str] = None
+    model_name: Optional[str] = None
     
     # Дополнительные поля
     wb_sku: Optional[int] = None
@@ -124,6 +125,7 @@ class ProductInfo:
             new_last=self.new_last,
             mega_last=self.mega_last,
             best_last=self.best_last,
+            model_name=self.model_name,
             wb_sku=self.wb_sku,
             has_punta_data=self.has_punta_data
         )
@@ -185,6 +187,9 @@ class ScoringConfig:
     best_last_bonus: int = 70
     new_last_bonus: int = 50
     no_last_penalty: float = 0.7    # Множитель при отсутствии совпадения колодки
+    
+    # Модель (новый параметр из punta_table.model_name)
+    model_match_bonus: int = 40
     
     # Остатки на складе
     stock_high_bonus: int = 40      # >5 шт
@@ -414,6 +419,7 @@ class ProductDataCollector:
                     product_info.new_last = punta_data.get('new_last')
                     product_info.mega_last = punta_data.get('mega_last')
                     product_info.best_last = punta_data.get('best_last')
+                    product_info.model_name = punta_data.get('model_name')
                     product_info.wb_sku = punta_data.get('wb_sku')
                     product_info.has_punta_data = True
                     
@@ -457,7 +463,7 @@ class ProductDataCollector:
             
             # Получаем punta данные для найденного wb_sku
             punta_query = """
-            SELECT material_short, new_last, mega_last, best_last
+            SELECT material_short, new_last, mega_last, best_last, model_name
             FROM punta_table 
             WHERE wb_sku = ?
             """
@@ -470,6 +476,7 @@ class ProductDataCollector:
                     'new_last': punta_result[1],
                     'mega_last': punta_result[2],
                     'best_last': punta_result[3],
+                    'model_name': punta_result[4],
                     'wb_sku': int(wb_sku)
                 }
                 
@@ -668,7 +675,7 @@ class ProductDataCollector:
             # Получаем punta данные batch запросом
             wb_skus_str = ','.join([str(sku) for sku in wb_skus])
             punta_query = f"""
-            SELECT wb_sku, material_short, new_last, mega_last, best_last
+            SELECT wb_sku, material_short, new_last, mega_last, best_last, model_name
             FROM punta_table 
             WHERE wb_sku IN ({wb_skus_str})
             """
@@ -682,7 +689,8 @@ class ProductDataCollector:
                     'material_short': row[1],
                     'new_last': row[2],
                     'mega_last': row[3],
-                    'best_last': row[4]
+                    'best_last': row[4],
+                    'model_name': row[5]
                 }
             
             # Создаем маппинг oz_vendor_code -> wb_sku
@@ -704,6 +712,7 @@ class ProductDataCollector:
                         product.new_last = punta_data['new_last']
                         product.mega_last = punta_data['mega_last']
                         product.best_last = punta_data['best_last']
+                        product.model_name = punta_data['model_name']
                         product.wb_sku = wb_sku
                         product.has_punta_data = True
                         enriched_count += 1
@@ -802,19 +811,12 @@ class RecommendationEngine:
                 logger.warning(f"❌ Нет рекомендаций после базовой фильтрации")
                 return []
             
-            # Сортируем и берем больше чем нужно для финального обогащения
-            preliminary_recommendations.sort(key=lambda r: r.score, reverse=True)
-            top_candidates_count = min(len(preliminary_recommendations), self.config.max_recommendations * 2)
-            top_candidates = preliminary_recommendations[:top_candidates_count]
-            
-            logger.info(f"📊 Отобрано {len(top_candidates)} топ кандидатов для обогащения punta данными")
-            
-            # Обогащаем только топ кандидатов punta данными
-            logger.info(f"🔗 Обогащение топ кандидатов punta данными")
+            # Обогащаем ВСЕ кандидаты punta данными для правильного учета колодок и моделей
+            logger.info(f"🔗 Обогащение всех {len(preliminary_recommendations)} кандидатов punta данными")
             step_start = time.time()
             
-            top_products = [r.product_info for r in top_candidates]
-            enriched_products = self.data_collector.enrich_with_punta_data(top_products)
+            all_products = [r.product_info for r in preliminary_recommendations]
+            enriched_products = self.data_collector.enrich_with_punta_data(all_products)
             
             step_time = time.time() - step_start
             logger.info(f"✅ Обогащение завершено за {step_time:.2f}с")
@@ -943,6 +945,10 @@ class RecommendationEngine:
         last_score = self._calculate_last_score(source, candidate)
         score += last_score
         
+        # Модель (новый параметр из punta_table.model_name)
+        model_score = self._calculate_model_score(source, candidate)
+        score += model_score
+        
         # Применяем штраф за отсутствие совпадения колодки
         if last_score == 0:
             score *= self.config.no_last_penalty
@@ -1026,6 +1032,16 @@ class RecommendationEngine:
         
         return 0
     
+    def _calculate_model_score(self, source: ProductInfo, candidate: ProductInfo) -> float:
+        """Вычисление score за модель (model_name из punta_table)"""
+        if not source.model_name or not candidate.model_name:
+            return 0
+        
+        if source.model_name.lower() == candidate.model_name.lower():
+            return self.config.model_match_bonus
+        else:
+            return 0
+    
     def _calculate_stock_score(self, candidate: ProductInfo) -> float:
         """Вычисление score за остатки на складе"""
         stock = candidate.oz_fbo_stock
@@ -1088,6 +1104,12 @@ class RecommendationEngine:
         if material_score > 0:
             details.append(f"Материал: {candidate.material_short} ✓")
             scores.append(f"+{self.config.material_match_bonus} баллов за материал")
+        
+        # Модель
+        model_score = self._calculate_model_score(source, candidate)
+        if model_score > 0:
+            details.append(f"Модель: {candidate.model_name} ✓")
+            scores.append(f"+{self.config.model_match_bonus} баллов за модель")
         
         # Застежка
         fastener_score = self._calculate_fastener_score(source, candidate)
@@ -1288,8 +1310,8 @@ class RichContentGenerator:
                 {
                     "imgLink": "",
                     "img": {
-                        "src": "https://cdn1.ozone.ru/s3/multimedia-1-5/7285284185.jpg",
-                        "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-5/7285284185.jpg",
+                        "src": "https://cdn1.ozone.ru/s3/multimedia-1-y/7767464938.jpg",
+                        "srcMobile": "https://cdn1.ozone.ru/s3/multimedia-1-f/7767465351.jpg",
                         "alt": "Рекомендуемые товары",
                         "position": "width_full",
                         "positionMobile": "width_full",
@@ -1318,16 +1340,21 @@ class RichContentGenerator:
                     "positionMobile": "to_the_edge", 
                     "widthMobile": 900,
                     "heightMobile": 1200,
-                    "isParandjaMobile": False
+                    "isParandjaMobile": False,
+                    "isParandja": False
                 },
                 "imgLink": product_url,
                 "title": {
-                    "content": [
-                        self._get_product_title(product, rec.score)
-                    ],
-                    "size": "size3",
+                    "size": "size2",
                     "align": "center",
-                    "color": "color1"
+                    "color": "color1",
+                    "items": [
+                        {
+                            "type": "link",
+                            "content": f"ОТКРЫТЬ {self._get_ozon_sku(product.oz_vendor_code)}",
+                            "href": f"https://www.ozon.ru/product/{self._get_ozon_sku(product.oz_vendor_code)}"
+                        }
+                    ]
                 }
             }
             showcase_blocks.append(product_block)
@@ -1535,11 +1562,32 @@ class RichContentGenerator:
                 return f"https://www.ozon.ru/product/{result[0]}"
             else:
                 # Fallback на базовую структуру с oz_vendor_code
-                return f"https://www.ozon.ru/product/{oz_vendor_code.replace('-', '')[:10]}"
+                return f"https://www.ozon.ru/brand/shuzzi-149479977/"
                 
         except Exception as e:
             logger.warning(f"Ошибка получения URL для {oz_vendor_code}: {e}")
-            return f"https://www.ozon.ru/product/{oz_vendor_code.replace('-', '')[:10]}"
+            return f"https://www.ozon.ru/brand/shuzzi-149479977/"
+    
+    def _get_ozon_sku(self, oz_vendor_code: str) -> str:
+        """Получение oz_sku для товара"""
+        try:
+            query = """
+            SELECT oz_sku 
+            FROM oz_products 
+            WHERE oz_vendor_code = ? 
+            AND oz_sku IS NOT NULL
+            """
+            
+            result = self.db_conn.execute(query, [oz_vendor_code]).fetchone() if hasattr(self, 'db_conn') else None
+            
+            if result and result[0]:
+                return str(result[0])
+            else:
+                return oz_vendor_code  # Fallback на vendor_code
+                
+        except Exception as e:
+            logger.warning(f"Ошибка получения oz_sku для {oz_vendor_code}: {e}")
+            return oz_vendor_code
     
     def _generate_product_url(self, oz_vendor_code: str) -> str:
         """Генерация URL товара на Ozon (старый метод для обратной совместимости)"""
