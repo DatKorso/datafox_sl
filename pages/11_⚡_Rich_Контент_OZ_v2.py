@@ -18,7 +18,6 @@ from typing import List, Optional
 # Импорты наших модулей
 from utils.db_connection import connect_db
 from utils.rich_content_oz import ScoringConfig, RichContentProcessor
-from utils.rich_content_oz_ui import render_scoring_config_ui
 from utils.rich_content_processor_v2 import BatchProcessorV2
 from utils.csv_exporter import RichContentCSVExporter
 

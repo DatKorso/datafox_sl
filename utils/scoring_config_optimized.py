@@ -31,6 +31,7 @@ class OptimizedScoringConfig(ScoringConfig):
     # Второстепенные характеристики - повышаем важность
     color_match_bonus: int = 80
     material_match_bonus: int = 100
+    material_mismatch_penalty: int = -50
     fastener_match_bonus: int = 40
     
     # Колодки - увеличиваем бонусы

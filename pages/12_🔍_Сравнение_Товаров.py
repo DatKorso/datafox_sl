@@ -6,13 +6,13 @@ Provides detailed scoring breakdown for analysis and debugging.
 import streamlit as st
 import sys
 import os
-import duckdb
 from pathlib import Path
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from utils.db_connection import connect_db
 from utils.product_comparison import ProductComparator
 
 def main():
@@ -57,21 +57,20 @@ def main():
         # Show comparison
         with st.spinner("Анализируем товары..."):
             try:
-                # Connect to database
-                db_path = project_root / "data" / "marketplace_data.db"
+                # Connect to database using standard method
+                db_conn = connect_db()
                 
-                if not db_path.exists():
-                    st.error(f"База данных не найдена: {db_path}")
+                if not db_conn:
+                    st.error("Не удалось подключиться к базе данных. Проверьте настройки.")
                     return
                 
-                with duckdb.connect(str(db_path)) as db_conn:
-                    comparator = ProductComparator(db_conn)
-                    result = comparator.compare_products(vendor_code_1, vendor_code_2)
-                    
-                    if result:
-                        display_comparison_result(result)
-                    else:
-                        st.error("Не удалось найти один или оба товара в базе данных")
+                comparator = ProductComparator(db_conn)
+                result = comparator.compare_products(vendor_code_1, vendor_code_2)
+                
+                if result:
+                    display_comparison_result(result)
+                else:
+                    st.error("Не удалось найти один или оба товара в базе данных")
                     
             except Exception as e:
                 st.error(f"Ошибка при сравнении: {str(e)}")
