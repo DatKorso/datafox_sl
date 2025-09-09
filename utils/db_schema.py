@@ -387,4 +387,48 @@ def create_tables_from_schema(con: duckdb.DuckDBPyConnection) -> bool:
         error_msg = f"Error: An unexpected error occurred during schema creation: {e}"
         print(error_msg)
         if callable(st.error): st.error(error_msg)
+        return False
+
+
+def create_performance_indexes(con: duckdb.DuckDBPyConnection) -> bool:
+    """
+    Создает индексы для оптимизации производительности после создания таблиц.
+    Интегрирован с db_indexing.py для управления индексами.
+    
+    Args:
+        con: Соединение с базой данных DuckDB
+        
+    Returns:
+        True если критические индексы созданы успешно
+    """
+    if not con:
+        print("Error: Database connection not available for index creation.")
+        if callable(st.error): st.error("Нет соединения с базой данных для создания индексов.")
+        return False
+    
+    try:
+        from .db_indexing import ensure_critical_indexes
+        
+        success = ensure_critical_indexes(con)
+        
+        if success:
+            success_msg = "✅ Критические индексы БД созданы успешно"
+            print(success_msg)
+            if callable(st.success): st.success(success_msg)
+        else:
+            warning_msg = "⚠️ Частично созданы индексы БД (некритично для работы системы)"
+            print(warning_msg)
+            if callable(st.warning): st.warning(warning_msg)
+        
+        return success
+        
+    except ImportError as e:
+        error_msg = f"Модуль индексирования недоступен: {e}"
+        print(error_msg)
+        if callable(st.warning): st.warning(error_msg)
+        return False
+    except Exception as e:
+        error_msg = f"Ошибка создания индексов: {e}"
+        print(error_msg)
+        if callable(st.warning): st.warning(error_msg)
         return False 

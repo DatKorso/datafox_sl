@@ -36,17 +36,6 @@ from utils.wb_ui_components import (
     render_manual_recommendations_compact, render_export_section
 )
 
-# Smart logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('wb_recommendations.log')
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Configuration
 st.set_page_config(
     page_title="🎯 WB Рекомендации", 
@@ -246,16 +235,6 @@ with st.sidebar.expander("❓ Справка", expanded=False):
     - Характеристики товаров в Ozon
     - Остатки WB > 0
     """)
-
-# Compact log viewer
-with st.sidebar.expander("📝 Логи", expanded=False):
-    try:
-        with open('wb_recommendations.log', 'r') as f:
-            lines = f.readlines()
-        last_lines = lines[-5:] if len(lines) > 5 else lines
-        st.code('\n'.join(last_lines), language='text')
-    except:
-        st.info("Лог файл не найден")
 
 # Compact footer
 st.markdown("---")

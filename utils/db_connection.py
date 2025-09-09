@@ -90,7 +90,7 @@ def get_connection_and_ensure_schema():
         DuckDB connection object or None if connection fails
     """
     from utils.config_utils import get_db_path
-    from utils.db_schema import create_tables_from_schema
+    from utils.db_schema import create_tables_from_schema, create_performance_indexes
     
     current_db_path = get_db_path()
     if not current_db_path:
@@ -98,5 +98,11 @@ def get_connection_and_ensure_schema():
     
     conn = connect_db(current_db_path)
     if conn:
-        create_tables_from_schema(conn)
+        # Создаем таблицы
+        tables_created = create_tables_from_schema(conn)
+        
+        # Создаем индексы после успешного создания таблиц
+        if tables_created:
+            create_performance_indexes(conn)
+        
     return conn 

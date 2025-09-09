@@ -208,6 +208,18 @@ def import_data_from_dataframe(
         con.unregister('temp_df_to_import')
         
         records_imported = len(df_to_import)
+        
+        # 5. Recreate indexes for this table after successful import
+        try:
+            from .db_indexing import recreate_indexes_after_import
+            recreate_indexes_after_import(con, table_name, silent=False)
+        except ImportError:
+            # Модуль индексирования недоступен - не критично
+            pass
+        except Exception as e_index:
+            # Ошибка создания индексов не должна прерывать успешный импорт
+            st.warning(f"⚠️ Данные импортированы успешно, но не удалось создать индексы: {e_index}")
+        
         return True, records_imported, ""
     except Exception as e_import:
         return False, 0, f"Error importing data into table '{table_name}': {e_import}"
@@ -280,6 +292,18 @@ def import_dynamic_punta_table(
         st.dataframe(preview_data, use_container_width=True)
         
         records_imported = len(df_clean)
+        
+        # 9. Recreate indexes for punta_table after successful import
+        try:
+            from .db_indexing import recreate_indexes_after_import
+            recreate_indexes_after_import(con, "punta_table", silent=False)
+        except ImportError:
+            # Модуль индексирования недоступен - не критично
+            pass
+        except Exception as e_index:
+            # Ошибка создания индексов не должна прерывать успешный импорт
+            st.warning(f"⚠️ Данные импортированы успешно, но не удалось создать индексы: {e_index}")
+        
         return True, records_imported, ""
         
     except Exception as e:

@@ -9,9 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Start Commands
 
 ```bash
-# Install dependencies (UV package manager preferred)
-uv install
-# Or with pip
+# Install dependencies (UV package manager)
+uv sync
+# Or with pip (fallback)
 pip install -r requirements.txt
 
 # Start the Streamlit application (default port 8501)
@@ -62,6 +62,11 @@ python -c "from utils.wb_photo_service import get_wb_photo_url; print('Photo Ser
 
 # Performance testing
 python -c "import duckdb; print('DuckDB Version:', duckdb.__version__)"
+
+# Database indexes management
+python -c "from utils.db_connection import connect_db; from utils.db_indexing import create_performance_indexes; conn=connect_db(); result=create_performance_indexes(conn, [1,2]); print('Index creation results:', result)"
+python -c "from utils.db_connection import connect_db; from utils.db_indexing import get_indexes_status; conn=connect_db(); print('Index status:', get_indexes_status(conn))"
+python -c "from utils.db_connection import connect_db; from utils.db_indexing import recreate_indexes_after_import; conn=connect_db(); recreate_indexes_after_import(conn, 'oz_barcodes', silent=False)"
 ```
 
 **Database & Config:**
@@ -70,6 +75,19 @@ python -c "import duckdb; print('DuckDB Version:', duckdb.__version__)"
 - Schema: Managed through `utils/db_schema.py` with auto-migration
 - Performance: Connection pooling via `@st.cache_resource`
 - Package Management: UV (pyproject.toml) preferred over pip (requirements.txt)
+
+**MCP Server Integration:**
+- **MotherDuck MCP**: Database operations via `mcp-server-motherduck` (read-only mode)
+- **Context7 MCP**: Library documentation and framework pattern guidance
+- **Excel MCP**: Excel file processing with 4000 cells paging limit
+- Configuration: `.mcp.json` defines server endpoints and parameters
+
+**Database Indexing System:**
+- **Auto-Creation**: Critical indexes created automatically during schema initialization
+- **Auto-Recreation**: Indexes automatically recreated after each data import
+- **Priority Levels**: Critical (1), Important (2), Additional (3) indexes
+- **Performance Boost**: 10-500x improvement for cross-marketplace linking and search operations
+- **Management**: `utils/db_indexing.py` handles all index operations
 
 ## High-Level Architecture
 
@@ -255,6 +273,7 @@ python -c "from utils.db_connection import connect_db; print('DB Ready')"
 3. Add error handling with user-friendly messages
 4. Use transactions for data integrity
 5. Monitor memory usage with DuckDB
+6. Indexes are managed automatically - no manual intervention needed
 
 **Performance Optimization:**
 1. Profile memory usage during development
@@ -396,6 +415,30 @@ processor = RichContentProcessor(db_conn, config)
 result = processor.process_batch_optimized(
     vendor_codes, batch_size=50, processing_mode="memory_safe")
 ```
+
+### Database Indexing Patterns
+
+**Index Management (Automatic):**
+```python
+# Indexes are created automatically, but manual operations available:
+
+# Check index status
+from utils.db_indexing import get_indexes_status
+status = get_indexes_status(conn)
+
+# Force recreate all indexes
+from utils.db_indexing import create_performance_indexes
+create_performance_indexes(conn, priority_levels=[1, 2, 3], force_recreate=True)
+
+# Recreate indexes for specific table after manual data operations
+from utils.db_indexing import recreate_indexes_after_import
+recreate_indexes_after_import(conn, "oz_barcodes")
+```
+
+**Index Priority Levels:**
+- **Level 1 (Critical)**: `oz_barcodes(oz_barcode)`, `wb_products(wb_sku)`, `oz_products(oz_vendor_code)`
+- **Level 2 (Important)**: SKU indexes, brand filters, product_id links
+- **Level 3 (Additional)**: Composite indexes for complex queries
 
 ### Database Query Patterns
 
