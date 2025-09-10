@@ -407,19 +407,26 @@ def create_performance_indexes(con: duckdb.DuckDBPyConnection) -> bool:
         return False
     
     try:
-        from .db_indexing import ensure_critical_indexes
-        
-        success = ensure_critical_indexes(con)
-        
+        # Создаем индексы всех приоритетов на старте, чтобы покрыть таблицы без импорт-хуков
+        from .db_indexing import create_performance_indexes as _create_all_indexes
+
+        results = _create_all_indexes(con, priority_levels=[1, 2, 3])
+
+        # Определим успешность по итогам создания (игнорируем служебные ключи)
+        success = all(
+            res[0] for name, res in results.items()
+            if name not in ("_summary", "error")
+        ) and len(results) > 0
+
         if success:
-            success_msg = "✅ Критические индексы БД созданы успешно"
+            success_msg = "✅ Индексы БД (1–3) созданы/проверены успешно"
             print(success_msg)
             if callable(st.success): st.success(success_msg)
         else:
             warning_msg = "⚠️ Частично созданы индексы БД (некритично для работы системы)"
             print(warning_msg)
             if callable(st.warning): st.warning(warning_msg)
-        
+
         return success
         
     except ImportError as e:

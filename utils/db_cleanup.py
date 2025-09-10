@@ -53,6 +53,14 @@ def cleanup_duplicate_barcodes(db_connection: duckdb.DuckDBPyConnection) -> Tupl
         # Replace original table
         db_connection.execute("DROP TABLE oz_barcodes")
         db_connection.execute("ALTER TABLE oz_barcodes_clean RENAME TO oz_barcodes")
+
+        # Recreate indexes for oz_barcodes after destructive change
+        try:
+            from .db_indexing import recreate_indexes_after_import
+            recreate_indexes_after_import(db_connection, 'oz_barcodes', silent=True)
+        except Exception:
+            # Индексы не критичны для завершения очистки; проглотим, но не мешаем ходу
+            pass
         
         # Get statistics after cleanup
         post_count = db_connection.execute("SELECT COUNT(*) FROM oz_barcodes").fetchone()[0]

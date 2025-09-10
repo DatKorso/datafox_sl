@@ -40,6 +40,13 @@ def migrate_integer_to_bigint_tables(conn: duckdb.DuckDBPyConnection) -> bool:
         for table_name in existing_tables:
             st.info(f"Удаление таблицы '{table_name}'...")
             conn.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+        # После разрушающих изменений попробуем пересоздать индексы (безопасно: пропустит, если таблиц нет)
+        try:
+            from .db_indexing import create_performance_indexes
+            create_performance_indexes(conn, priority_levels=[1, 2, 3])
+        except Exception:
+            pass
         
         st.success("✅ Миграция схемы завершена. Таблицы пересозданы с новыми типами данных.")
         st.info("📥 Теперь вы можете переимпортировать данные на странице 'Import Reports'.")
@@ -126,6 +133,13 @@ def migrate_wb_sku_to_bigint(conn: duckdb.DuckDBPyConnection) -> bool:
         for table_name in existing_tables:
             st.info(f"Удаление таблицы '{table_name}'...")
             conn.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+        # После разрушающих изменений попробуем пересоздать индексы (безопасно: пропустит, если таблиц нет)
+        try:
+            from .db_indexing import create_performance_indexes
+            create_performance_indexes(conn, priority_levels=[1, 2, 3])
+        except Exception:
+            pass
         
         st.success("✅ Миграция WB SKU завершена. Таблицы пересозданы с типом BIGINT для wb_sku.")
         st.info("📥 Теперь вы можете переимпортировать данные Wildberries на странице 'Import Reports'.")

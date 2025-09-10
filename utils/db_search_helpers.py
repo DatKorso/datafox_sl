@@ -178,21 +178,27 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
         wb_sku_filter = " AND p.wb_sku IN ({})".format(", ".join("?" * len(skus_for_query)))
         params = tuple(skus_for_query)
 
-    # Updated query to properly split barcodes separated by semicolon
+    # Updated query: split barcodes via SQL and capture position using generate_series + list indexing
     base_query = f"""
-    WITH split_barcodes AS (
+    WITH arrs AS (
         SELECT 
             p.wb_sku,
-            p.wb_barcodes,
-            UNNEST(string_split(p.wb_barcodes, ';')) AS individual_barcode_wb
+            string_split(p.wb_barcodes, ';') AS arr
         FROM wb_products p
         WHERE NULLIF(TRIM(p.wb_barcodes), '') IS NOT NULL{wb_sku_filter}
+    ),
+    expanded AS (
+        SELECT 
+            wb_sku,
+            idx AS barcode_position,
+            TRIM(arr[idx]) AS individual_barcode_wb
+        FROM arrs, generate_series(1, array_length(arr)) AS gs(idx)
     )
     SELECT 
         wb_sku,
-        wb_barcodes,
-        TRIM(individual_barcode_wb) AS individual_barcode_wb
-    FROM split_barcodes
+        individual_barcode_wb,
+        barcode_position
+    FROM expanded
     WHERE NULLIF(TRIM(individual_barcode_wb), '') IS NOT NULL
     """
     
@@ -201,17 +207,6 @@ def get_normalized_wb_barcodes(con: duckdb.DuckDBPyConnection, wb_skus: list[str
             result_df = con.execute(base_query, params).fetchdf()
         else:
             result_df = con.execute(base_query).fetchdf()
-        
-        # Добавляем позицию штрихкода на уровне Python для гарантированной корректности
-        if not result_df.empty:
-            result_df['barcode_position'] = result_df.apply(
-                lambda row: row['wb_barcodes'].split(';').index(row['individual_barcode_wb']) + 1 
-                if row['individual_barcode_wb'] in row['wb_barcodes'].split(';') else 1, 
-                axis=1
-            )
-            # Удаляем вспомогательную колонку
-            result_df = result_df.drop('wb_barcodes', axis=1)
-        
         return result_df
     except Exception as e:
         err_msg = f"Error normalizing WB barcodes: {e}"

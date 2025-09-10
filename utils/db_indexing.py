@@ -100,6 +100,42 @@ PERFORMANCE_INDEXES = [
         priority=2,
         description="Фильтрация Ozon товаров по бренду"
     ),
+    # ДОБАВЛЕНО: индексы, рекомендованные для производительности
+    IndexDefinition(
+        name="idx_wb_prices_sku",
+        table="wb_prices",
+        columns=["wb_sku"],
+        priority=2,
+        description="JOIN/фильтры по wb_sku в ценах WB"
+    ),
+    IndexDefinition(
+        name="idx_oz_card_rating_sku",
+        table="oz_card_rating",
+        columns=["oz_sku"],
+        priority=2,
+        description="Быстрый доступ к рейтингу по SKU"
+    ),
+    IndexDefinition(
+        name="idx_oz_card_rating_vendor_code",
+        table="oz_card_rating",
+        columns=["oz_vendor_code"],
+        priority=3,
+        description="Доп. доступ к рейтингу по vendor code"
+    ),
+    IndexDefinition(
+        name="idx_category_mapping_wb_category",
+        table="category_mapping",
+        columns=["wb_category"],
+        priority=3,
+        description="Поиск маппинга по категории WB"
+    ),
+    IndexDefinition(
+        name="idx_category_mapping_wb_oz",
+        table="category_mapping",
+        columns=["wb_category", "oz_category"],
+        priority=3,
+        description="Композит для быстрых проверок соответствий категорий"
+    ),
     
     # ПРИОРИТЕТ 3: Композитные индексы
     IndexDefinition(
