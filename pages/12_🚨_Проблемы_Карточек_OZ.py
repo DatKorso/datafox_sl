@@ -76,18 +76,20 @@ with tab1:
         """Load products with error information from the database."""
         query = """
             SELECT 
-                oz_vendor_code,
-                product_name,
-                oz_brand,
-                color,
-                russian_size,
-                error,
-                warning,
-                oz_actual_price,
-                oz_sku
-            FROM oz_category_products 
-            WHERE error IS NOT NULL AND error != '' AND error != 'NULL'
-            ORDER BY oz_vendor_code
+                ocp.oz_vendor_code,
+                ocp.product_name,
+                ocp.oz_brand,
+                ocp.color,
+                ocp.russian_size,
+                ocp.error,
+                ocp.warning,
+                ocp.oz_actual_price,
+                ocp.oz_sku,
+                COALESCE(op.oz_fbo_stock, 0) as oz_fbo_stock
+            FROM oz_category_products ocp
+            LEFT JOIN oz_products op ON ocp.oz_vendor_code = op.oz_vendor_code
+            WHERE ocp.error IS NOT NULL AND ocp.error != '' AND ocp.error != 'NULL'
+            ORDER BY ocp.oz_vendor_code
         """
         try:
             df = db_connection.execute(query).fetchdf()
@@ -201,6 +203,11 @@ with tab1:
         with col4:
             show_warnings = st.checkbox("Показать также предупреждения", help="Включить товары с предупреждениями", key="error_show_warnings")
 
+        # Additional filter for stock
+        col5, col6 = st.columns(2)
+        with col5:
+            filter_by_stock = st.checkbox("Показать только товары с остатками", help="Фильтровать товары с остатком > 0", key="error_filter_by_stock")
+
         # Apply filters
         filtered_df = error_df.copy()
 
@@ -228,22 +235,28 @@ with tab1:
         if show_warnings:
             warning_query = """
                 SELECT 
-                    oz_vendor_code,
-                    product_name,
-                    oz_brand,
-                    color,
-                    russian_size,
-                    error,
-                    warning,
-                    oz_actual_price,
-                    oz_sku
-                FROM oz_category_products 
-                WHERE warning IS NOT NULL AND warning != '' AND warning != 'NULL'
-                ORDER BY oz_vendor_code
+                    ocp.oz_vendor_code,
+                    ocp.product_name,
+                    ocp.oz_brand,
+                    ocp.color,
+                    ocp.russian_size,
+                    ocp.error,
+                    ocp.warning,
+                    ocp.oz_actual_price,
+                    ocp.oz_sku,
+                    COALESCE(op.oz_fbo_stock, 0) as oz_fbo_stock
+                FROM oz_category_products ocp
+                LEFT JOIN oz_products op ON ocp.oz_vendor_code = op.oz_vendor_code
+                WHERE ocp.warning IS NOT NULL AND ocp.warning != '' AND ocp.warning != 'NULL'
+                ORDER BY ocp.oz_vendor_code
             """
             warning_df = db_connection.execute(warning_query).fetchdf()
             if not warning_df.empty:
                 filtered_df = pd.concat([filtered_df, warning_df]).drop_duplicates()
+
+        # Filter by stock
+        if filter_by_stock:
+            filtered_df = filtered_df[filtered_df['oz_fbo_stock'] > 0]
 
         # Display filtered results
         st.subheader(f"📋 Результаты фильтрации ({len(filtered_df)} товаров)")
@@ -270,7 +283,7 @@ with tab1:
 
             if display_options == "Таблица":
                 # Display as table
-                display_columns = ['oz_vendor_code', 'product_name', 'oz_brand', 'color', 'russian_size', 'oz_actual_price', 'error']
+                display_columns = ['oz_vendor_code', 'product_name', 'oz_brand', 'color', 'russian_size', 'oz_fbo_stock', 'oz_actual_price', 'error']
                 st.dataframe(
                     filtered_df[display_columns], 
                     use_container_width=True, 
@@ -281,6 +294,7 @@ with tab1:
                         'oz_brand': 'Бренд',
                         'color': 'Цвет',
                         'russian_size': 'Размер',
+                        'oz_fbo_stock': st.column_config.NumberColumn('Остаток', format="%d"),
                         'oz_actual_price': st.column_config.NumberColumn('Цена, ₽', format="%.0f"),
                         'error': 'Ошибки'
                     }
@@ -298,6 +312,7 @@ with tab1:
                             st.write(f"**Бренд:** {row['oz_brand']}")
                             st.write(f"**Цвет:** {row['color']}")
                             st.write(f"**Размер:** {row['russian_size']}")
+                            st.write(f"**Остаток:** {row['oz_fbo_stock']}")
                             st.write(f"**Цена:** {row['oz_actual_price']} ₽")
                             if row['oz_sku']:
                                 st.write(f"**SKU:** {row['oz_sku']}")
