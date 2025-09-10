@@ -12,13 +12,11 @@ This page displays:
 """
 import streamlit as st
 import pandas as pd
-from utils.config_utils import load_config, get_db_path
-# from utils.db_utils import connect_db, get_db_stats # Old import
-from utils.db_connection import connect_db # New import
-from utils.db_crud import get_db_stats # New import
-from utils.db_migration import auto_migrate_if_needed  # New import for migration check
-# from utils.ui_utils import show_navigation_links # REMOVING: Assuming this exists or will be created
-import os # For checking db file existence if needed directly
+from utils.config_utils import load_config, get_db_path, get_db_mode, get_motherduck_db_name
+from utils.db_connection import connect_db
+from utils.db_crud import get_db_stats
+from utils.db_migration import auto_migrate_if_needed
+import os
 
 st.set_page_config(page_title="Home - Marketplace Analyzer", layout="wide")
 
@@ -30,32 +28,40 @@ st.markdown("---")
 
 st.header("Database Analytics")
 
-# Check database configuration and connection
-# db_path = config_utils.get_db_path() # Old call causing NameError
-db_path = get_db_path() # Corrected call
-db_exists_and_configured = bool(db_path and os.path.exists(db_path))
+# Detect database mode and handle accordingly
+mode = get_db_mode()
+db_path = get_db_path()
 connection_active = False
 conn = None
 
-if not db_path:
-    st.warning("Database path not configured. Please go to the Settings page to set up the database.")
-    if st.button("Go to Settings"):
-        st.switch_page("pages/3_Settings.py")
-elif not os.path.exists(db_path):
-    st.error(f"Database file not found at the configured path: {db_path}. Please check the path in Settings or create the database.")
-    if st.button("Go to Settings ", key="settings_db_not_found"):
-        st.switch_page("pages/3_Settings.py")
-else:
-    # Attempt to connect if DB path is configured and seems to exist
-    # conn = db_utils.connect_db(db_path) # Old call
-    conn = connect_db(db_path) # Corrected call
+if mode == "motherduck":
+    # Connect using MotherDuck settings from config (handled inside connect_db)
+    conn = connect_db()
     if conn:
         connection_active = True
-        # st.success(f"Connected to database: {db_path}") # Keep UI cleaner, status is shown in metrics
     else:
-        st.error(f"Failed to connect to the database at {db_path}. Please check settings or ensure the database file is accessible.")
-        if st.button("Go to Settings  ", key="settings_db_fail_connect"):
-            st.switch_page("pages/3_Settings.py")
+        md_name = get_motherduck_db_name() or "(not set)"
+        st.error(f"Failed to connect to MotherDuck database md:{md_name}. Please check the DB name and token in Settings.")
+        if st.button("Go to Settings", key="settings_md_fail_connect"):
+            st.switch_page("pages/3_⚙️_Настройки.py")
+else:
+    # Local file mode: validate path and existence before connecting
+    if not db_path:
+        st.warning("Database path not configured. Please go to the Settings page to set up the database.")
+        if st.button("Go to Settings", key="settings_db_not_configured"):
+            st.switch_page("pages/3_⚙️_Настройки.py")
+    elif not os.path.exists(db_path):
+        st.error(f"Database file not found at the configured path: {db_path}. Please check the path in Settings or create the database.")
+        if st.button("Go to Settings", key="settings_db_not_found"):
+            st.switch_page("pages/3_⚙️_Настройки.py")
+    else:
+        conn = connect_db(db_path)
+        if conn:
+            connection_active = True
+        else:
+            st.error(f"Failed to connect to the database at {db_path}. Please check settings or ensure the database file is accessible.")
+            if st.button("Go to Settings", key="settings_db_fail_connect"):
+                st.switch_page("pages/3_⚙️_Настройки.py")
 
 if connection_active and conn:
     # Check for schema migration needs first
@@ -75,7 +81,10 @@ if connection_active and conn:
         st.metric("Total Tables in DB", stats.get('table_count', "N/A"))
     with col3:
         db_size = stats.get('db_file_size_mb', "N/A")
-        st.metric("Database File Size", f"{db_size} MB" if isinstance(db_size, (int, float)) else "N/A")
+        method = stats.get('db_size_method')
+        label_suffix = " (estimated)" if method and method.startswith('md_') else ""
+        value = f"{db_size} MB" if isinstance(db_size, (int, float)) else "N/A"
+        st.metric("Database Size" + label_suffix, value)
 
     st.metric("Total Records (in managed tables)", stats.get('total_records', "N/A"))
 

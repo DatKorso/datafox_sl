@@ -17,6 +17,7 @@ from utils.db_connection import connect_db, get_connection_and_ensure_schema
 from utils.db_crud import import_data_from_dataframe
 from utils.db_schema import get_table_schema_definition, get_defined_table_names, create_tables_from_schema
 from utils.google_sheets_utils import read_google_sheets_as_dataframe, validate_google_sheets_url, test_google_sheets_access
+from utils.excel_utils import read_excel_with_fallback, ExcelReadError
 
 # (Keep other imports like ui_utils if they exist)
 # from utils.ui_utils import show_navigation_links
@@ -194,6 +195,14 @@ else:
                     skip_rows_after_header_count = pd_read_params.pop('skip_rows_after_header', 0)
                     pd_read_params.pop('data_starts_on_row', None) # Remove old param if present
 
+                    # Prepare expected source columns for smart header detection
+                    expected_source_columns = []
+                    try:
+                        cols_def = schema_for_selected_report.get("columns", [])
+                        expected_source_columns = [c.get('source_col_name') for c in cols_def if isinstance(c, dict) and c.get('source_col_name')]
+                    except Exception:
+                        expected_source_columns = []
+
                     if file_type == "google_sheets":
                         try:
                             current_df = read_google_sheets_as_dataframe(data_source_path)
@@ -212,11 +221,16 @@ else:
                                     xlsx_files_found = True
                                     file_path = os.path.join(data_source_path, f_name)
                                     try:
-                                        current_df = pd.read_excel(file_path, engine='openpyxl', **pd_read_params)
+                                        current_df = read_excel_with_fallback(
+                                            file_path,
+                                            expected_columns=expected_source_columns,
+                                            skip_rows_after_header=skip_rows_after_header_count,
+                                            **pd_read_params,
+                                        )
                                         if skip_rows_after_header_count > 0:
                                             current_df = current_df.iloc[skip_rows_after_header_count:].reset_index(drop=True)
-                                        all_dfs.append(current_df)
-                                    except Exception as e_read:
+                                            all_dfs.append(current_df)
+                                    except ExcelReadError as e_read:
                                         st.error(f"Ошибка при чтении файла {f_name}: {e_read}")
                             if not xlsx_files_found:
                                 st.warning(f"Не найдено XLSX файлов в папке {data_source_path}.")        
@@ -262,7 +276,12 @@ else:
                                     })
                                 
                                 st.info(f"📖 Чтение файла с защитой от больших чисел: {os.path.basename(data_source_path)}")
-                                current_df = pd.read_excel(data_source_path, engine='openpyxl', **safe_read_params)
+                                current_df = read_excel_with_fallback(
+                                    data_source_path,
+                                    expected_columns=expected_source_columns,
+                                    skip_rows_after_header=skip_rows_after_header_count,
+                                    **safe_read_params,
+                                )
                                 
                                 if skip_rows_after_header_count > 0:
                                     current_df = current_df.iloc[skip_rows_after_header_count:].reset_index(drop=True)
@@ -275,9 +294,8 @@ else:
                                 all_dfs.append(current_df)
                         except FileNotFoundError:
                             st.error(f"Файл не найден по указанному пути: {data_source_path}")
-                        except Exception as e_read:
+                        except ExcelReadError as e_read:
                             st.error(f"Ошибка при чтении файла {os.path.basename(data_source_path)}: {e_read}")
-                            st.error(f"Подробности ошибки: {str(e_read)}")
                             # Try to provide helpful suggestions
                             if "Value out of range" in str(e_read) or "overflow" in str(e_read).lower():
                                 st.warning("💡 Возможная причина: файл содержит очень большие числа. Попробуйте:")
@@ -326,7 +344,12 @@ else:
                                                 })
                                             
                                             st.info(f"📖 Чтение загруженного файла с защитой от больших чисел: {uploaded_file_obj.name}")
-                                            current_df = pd.read_excel(uploaded_file_obj, engine='openpyxl', **safe_read_params)
+                                            current_df = read_excel_with_fallback(
+                                                uploaded_file_obj,
+                                                expected_columns=expected_source_columns,
+                                                skip_rows_after_header=skip_rows_after_header_count,
+                                                **safe_read_params,
+                                            )
                                             
                                             if skip_rows_after_header_count > 0:
                                                 current_df = current_df.iloc[skip_rows_after_header_count:].reset_index(drop=True)
@@ -336,9 +359,8 @@ else:
                                             st.error(f"Неподдерживаемый тип файла для чтения: {schema_for_selected_report.get('file_type')}")
                                             continue
                                         all_dfs.append(current_df)
-                                    except Exception as e_read:
+                                    except ExcelReadError as e_read:
                                         st.error(f"Ошибка при чтении файла {uploaded_file_obj.name}: {e_read}")
-                                        st.error(f"Подробности ошибки: {str(e_read)}")
                                         # Try to provide helpful suggestions
                                         if "Value out of range" in str(e_read) or "overflow" in str(e_read).lower():
                                             st.warning("💡 Возможная причина: файл содержит очень большие числа. Попробуйте:")

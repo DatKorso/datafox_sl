@@ -500,6 +500,7 @@ dependencies = [
     { name = "streamlit" },
     { name = "streamlit-extras" },
     { name = "watchdog" },
+    { name = "xlsx2csv" },
 ]
 
 [package.metadata]
@@ -513,6 +514,7 @@ requires-dist = [
     { name = "streamlit", specifier = ">=1.48.1" },
     { name = "streamlit-extras", specifier = ">=0.7.6" },
     { name = "watchdog", specifier = ">=6.0.0" },
+    { name = "xlsx2csv", specifier = ">=0.8.1" },
 ]
 
 [[package]]
@@ -2286,4 +2288,13 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/8a/98/2d9906746cdc6a6ef809ae6338005b3f21bb568bea3165cfc6a243fdc25c/wheel-0.45.1.tar.gz", hash = "sha256:661e1abd9198507b1409a20c02106d9670b2576e916d58f520316666abca6729", size = 107545, upload-time = "2024-11-23T00:18:23.513Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl", hash = "sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248", size = 72494, upload-time = "2024-11-23T00:18:21.207Z" },
+]
+
+[[package]]
+name = "xlsx2csv"
+version = "0.8.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/20/94860286a308a4213581c1beacd4fc7be724250c03583fcff23aaa6107bb/xlsx2csv-0.8.4.tar.gz", hash = "sha256:2aa809888826f6af5b26c77fc7f613f2bbeada0d8cc09e5a58e0f59684bb6911", size = 221390, upload-time = "2024-11-19T17:06:07.818Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/c0/15c21556362c67f1155f3643a375d50ac67559b82c768e64e800a42a2577/xlsx2csv-0.8.4-py3-none-any.whl", hash = "sha256:52ab873fc7b2f2ca75d14aee8bd1985a9f5c1bcb3cc7b80df7a5d57a40a67473", size = 15904, upload-time = "2024-11-19T17:06:05.362Z" },
 ]

@@ -28,55 +28,131 @@ config = config_utils.load_config()
 
 # --- Database Configuration --- 
 with st.expander("Database Configuration", expanded=True):
-    st.subheader("Database File Setup")
-    db_path_current = config_utils.get_db_path()
-    db_path_new = st.text_input(
-        "Database File Path", 
-        value=db_path_current, 
-        placeholder="e.g., data/marketplace_data.db",
-        help="Path to your DuckDB database file. Relative paths (e.g., data/market.db) are relative to the project root. "
-             "If the file doesn't exist where specified, the 'Create Empty Database & Schema' button can make it."
+    st.subheader("Database Mode")
+    current_mode = config_utils.get_db_mode()
+    mode_label_to_value = {
+        "Local (DuckDB file)": "local",
+        "MotherDuck (cloud)": "motherduck",
+    }
+    value_to_mode_label = {v: k for k, v in mode_label_to_value.items()}
+    selected_label = st.radio(
+        "Choose where to store data",
+        options=list(mode_label_to_value.keys()),
+        index=list(mode_label_to_value.keys()).index(value_to_mode_label.get(current_mode, "Local (DuckDB file)")),
+        help="Switch between a local DuckDB file and MotherDuck cloud database."
     )
+    selected_mode = mode_label_to_value[selected_label]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Test Connection", key="test_db_connection_button", help="Tests if a connection can be established to the database file specified above."):
-            if not db_path_new:
-                st.error("Database path cannot be empty to test connection.")
-            elif test_db_connection(db_path_new):
-                st.success(f"Successfully connected to database at: {db_path_new}")
-            else:
-                st.error(f"Failed to connect to database at: {db_path_new}. Check path and permissions.")
-    
-    with col2:
-        if st.button("Create Empty Database & Schema", 
-                      key="create_db_button", 
-                      help="Ensures the database file exists at the specified path (creates it if not) and applies the schema from mp_reports_schema.md. Deletes existing tables if they conflict with the schema being applied."):
-            if not db_path_new:
-                st.error("Database path cannot be empty to create a database.")
-            else:
-                # Ensure parent directory for the database file exists
-                db_dir = os.path.dirname(db_path_new)
-                if db_dir and not os.path.exists(db_dir):
-                    try:
-                        os.makedirs(db_dir, exist_ok=True)
-                        st.info(f"Created directory for database: {db_dir}")
-                    except Exception as e:
-                        st.error(f"Could not create directory {db_dir} for database: {e}")
-                        st.stop() # Stop if directory creation fails, as DB connection will likely fail
-                
-                # Connect to the database (this will create the .db file if it doesn't exist)
-                conn = connect_db(db_path_new)
-                if conn:
-                    st.success(f"Database file ensured/created at: {db_path_new}")
-                    # Attempt to create tables based on the schema file
-                    if create_tables_from_schema(conn):
-                        st.success("Database schema created/verified successfully!")
-                    else:
-                        st.warning("Attempted to create/verify database schema. Some tables might not have been created or issues were encountered. Check logs.")
-                    conn.close() # Close connection after operations
+    # Local configuration
+    db_path_current = config_utils.get_db_path()
+    db_path_new = db_path_current
+
+    # MotherDuck configuration fields
+    md_db_name_current = config_utils.get_motherduck_db_name()
+    md_token_current = config_utils.get_motherduck_token()
+    motherduck_db_name_new = md_db_name_current
+    motherduck_token_new = md_token_current
+
+    if selected_mode == "local":
+        st.subheader("Local Database File")
+        db_path_new = st.text_input(
+            "Database File Path",
+            value=db_path_current,
+            placeholder="e.g., data/marketplace_data.db",
+            help="Path to your DuckDB database file. Relative paths (e.g., data/market.db) are relative to the project root. If the file doesn't exist, the button below will create it and initialize schema."
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Test Connection", key="test_db_connection_button", help="Tests if a connection can be established to the database file specified above."):
+                if not db_path_new:
+                    st.error("Database path cannot be empty to test connection.")
+                elif test_db_connection(db_path_new):
+                    st.success(f"Successfully connected to database at: {db_path_new}")
                 else:
-                    st.error(f"Could not create or connect to database at: {db_path_new}")
+                    st.error(f"Failed to connect to database at: {db_path_new}. Check path and permissions.")
+
+        with col2:
+            if st.button(
+                "Create Empty Database & Schema",
+                key="create_db_button",
+                help="Ensures the database file exists (creates if not) and applies the built-in schema."
+            ):
+                if not db_path_new:
+                    st.error("Database path cannot be empty to create a database.")
+                else:
+                    # Ensure parent directory for the database file exists
+                    db_dir = os.path.dirname(db_path_new)
+                    if db_dir and not os.path.exists(db_dir):
+                        try:
+                            os.makedirs(db_dir, exist_ok=True)
+                            st.info(f"Created directory for database: {db_dir}")
+                        except Exception as e:
+                            st.error(f"Could not create directory {db_dir} for database: {e}")
+                            st.stop()
+
+                    # Connect to the database (this will create the .db file if it doesn't exist)
+                    conn = connect_db(db_path_new)
+                    if conn:
+                        st.success(f"Database file ensured/created at: {db_path_new}")
+                        # Attempt to create tables based on the schema
+                        if create_tables_from_schema(conn):
+                            st.success("Database schema created/verified successfully!")
+                        else:
+                            st.warning("Attempted to create/verify database schema. Some tables might not have been created or issues were encountered. Check logs.")
+                        conn.close()
+                    else:
+                        st.error(f"Could not create or connect to database at: {db_path_new}")
+    else:
+        st.subheader("MotherDuck Cloud Settings")
+        motherduck_db_name_new = st.text_input(
+            "MotherDuck Database Name",
+            value=md_db_name_current,
+            placeholder="e.g., datafox_sl or workspace/datafox_sl",
+            help="Name of the MotherDuck database to use."
+        )
+        motherduck_token_new = st.text_input(
+            "MotherDuck Token",
+            value=md_token_current,
+            type="password",
+            help="Token used for authentication. Stored in config.json; you may also set env var MOTHERDUCK_TOKEN."
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Test Cloud Connection", key="test_md_connection_button"):
+                if not motherduck_db_name_new.strip():
+                    st.error("MotherDuck database name cannot be empty.")
+                else:
+                    # Allow testing without saving by temporarily setting env
+                    if motherduck_token_new:
+                        os.environ["MOTHERDUCK_TOKEN"] = motherduck_token_new
+                    conn = connect_db(f"md:{motherduck_db_name_new.strip()}")
+                    if conn:
+                        try:
+                            conn.execute("SELECT 42;")
+                            st.success(f"Successfully connected to MotherDuck: md:{motherduck_db_name_new.strip()}")
+                        finally:
+                            conn.close()
+                    else:
+                        st.error("Failed to connect to MotherDuck. Check token and DB name.")
+
+        with col2:
+            if st.button("Initialize Schema on MotherDuck", key="init_md_schema_button"):
+                if not motherduck_db_name_new.strip():
+                    st.error("MotherDuck database name cannot be empty.")
+                else:
+                    if motherduck_token_new:
+                        os.environ["MOTHERDUCK_TOKEN"] = motherduck_token_new
+                    conn = connect_db(f"md:{motherduck_db_name_new.strip()}")
+                    if conn:
+                        if create_tables_from_schema(conn):
+                            st.success("MotherDuck schema created/verified successfully!")
+                        else:
+                            st.warning("Attempted to create/verify schema on MotherDuck. Check logs for details.")
+                        conn.close()
+                    else:
+                        st.error("Could not connect to MotherDuck to initialize schema.")
 
 # --- Margin Calculation Parameters ---
 with st.expander("Margin Calculation Parameters"):
@@ -426,8 +502,13 @@ if st.button("Save All Settings", key="save_all_settings_button", help="Saves al
             st.warning(warning)
         st.info("Paths have been saved, but please double-check the warnings above. You can configure paths for files/directories you intend to create later.")
 
-    # Update database path
-    config_utils.set_db_path(db_path_new)
+    # Update database mode and connection settings
+    config_utils.set_db_mode(selected_mode)
+    if selected_mode == "local":
+        config_utils.set_db_path(db_path_new)
+    else:
+        config_utils.set_motherduck_db_name(motherduck_db_name_new.strip())
+        config_utils.set_motherduck_token(motherduck_token_new)
     
     # Update margin calculation parameters with validation
     try:

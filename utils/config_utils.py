@@ -15,6 +15,13 @@ import streamlit as st
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "database_path": "data/marketplace_data.db",
+    # Database mode: "local" (file path) or "motherduck" (cloud)
+    "database_mode": "local",
+    # MotherDuck-specific settings
+    "motherduck": {
+        "db_name": "",   # e.g., "datafox_sl" or "workspace/datafox_sl"
+        "token": ""       # Optional, can also come from env MOTHERDUCK_TOKEN
+    },
     "report_paths": {
         "oz_barcodes_xlsx": "",
         "oz_orders_csv": "",
@@ -141,6 +148,34 @@ def get_db_path() -> str:
 def set_db_path(path: str) -> None:
     """Sets and saves the database path in the configuration."""
     update_config_value("database_path", path)
+
+def get_db_mode() -> str:
+    """Returns current database mode: 'local' or 'motherduck'."""
+    mode = get_config_value("database_mode", default=DEFAULT_CONFIG["database_mode"]) or "local"
+    return mode if mode in ("local", "motherduck") else "local"
+
+def set_db_mode(mode: str) -> None:
+    """Sets database mode to 'local' or 'motherduck'."""
+    normalized = mode.lower().strip()
+    if normalized not in ("local", "motherduck"):
+        normalized = "local"
+    update_config_value("database_mode", normalized)
+
+def get_motherduck_db_name() -> str:
+    """Returns MotherDuck database name from config (may be empty)."""
+    return get_config_value("motherduck", sub_key="db_name", default="")
+
+def set_motherduck_db_name(name: str) -> None:
+    """Sets MotherDuck database name in config."""
+    update_config_value("motherduck", (name or "").strip(), sub_key="db_name")
+
+def get_motherduck_token() -> str:
+    """Returns MotherDuck token from config (may be empty)."""
+    return get_config_value("motherduck", sub_key="token", default="")
+
+def set_motherduck_token(token: str) -> None:
+    """Sets MotherDuck token in config."""
+    update_config_value("motherduck", token or "", sub_key="token")
 
 def get_report_path(report_key: str) -> str:
     """

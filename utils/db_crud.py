@@ -201,14 +201,52 @@ def import_data_from_dataframe(
         for col, count in null_summary.items():
             st.write(f"• **{col}**: {count} пустых значений из {total_rows} ({count/total_rows*100:.1f}%)")
 
-    # 4. Import data into DuckDB table
+    # 4. Import data into DuckDB table (with MotherDuck-friendly chunking)
     try:
-        con.register('temp_df_to_import', df_to_import)
-        con.execute(f'INSERT INTO "{table_name}" SELECT * FROM temp_df_to_import;')
-        con.unregister('temp_df_to_import')
-        
-        records_imported = len(df_to_import)
-        
+        total_rows = len(df_to_import)
+        # Detect if connected to MotherDuck (main database path starts with md:)
+        is_motherduck = False
+        try:
+            db_info = con.execute("SELECT path FROM duckdb_databases() WHERE name = 'main'").fetchone()
+            if db_info and isinstance(db_info[0], str) and db_info[0].startswith('md:'):
+                is_motherduck = True
+        except Exception:
+            # Fallback: if detection fails, assume local
+            is_motherduck = False
+
+        # Decide chunk size: for MD or large datasets, use chunks to avoid long leases
+        if is_motherduck or total_rows > 100_000:
+            chunk_size = 50_000 if total_rows > 50_000 else 25_000
+            st.info(f"🚚 Импорт с пакетированием: {total_rows} строк, размер пакета {chunk_size}")
+            progress_bar = st.progress(0.0)
+            imported = 0
+            batch_idx = 0
+            while imported < total_rows:
+                batch_idx += 1
+                end = min(imported + chunk_size, total_rows)
+                chunk = df_to_import.iloc[imported:end].copy()
+                try:
+                    con.register('temp_df_to_import', chunk)
+                    con.execute(f'INSERT INTO "{table_name}" SELECT * FROM temp_df_to_import;')
+                    con.unregister('temp_df_to_import')
+                    imported = end
+                    progress_bar.progress(imported / total_rows)
+                    # Keep-alive ping between batches for long-running cloud sessions
+                    try:
+                        con.execute('SELECT 1;')
+                    except Exception:
+                        pass
+                except Exception as batch_err:
+                    return False, imported, f"Error importing data into table '{table_name}' on batch {batch_idx}: {batch_err}"
+
+            records_imported = imported
+        else:
+            # Single-shot import for small/local datasets
+            con.register('temp_df_to_import', df_to_import)
+            con.execute(f'INSERT INTO "{table_name}" SELECT * FROM temp_df_to_import;')
+            con.unregister('temp_df_to_import')
+            records_imported = total_rows
+
         # 5. Recreate indexes for this table after successful import
         try:
             from .db_indexing import recreate_indexes_after_import
@@ -219,7 +257,7 @@ def import_data_from_dataframe(
         except Exception as e_index:
             # Ошибка создания индексов не должна прерывать успешный импорт
             st.warning(f"⚠️ Данные импортированы успешно, но не удалось создать индексы: {e_index}")
-        
+
         return True, records_imported, ""
     except Exception as e_import:
         return False, 0, f"Error importing data into table '{table_name}': {e_import}"
@@ -356,7 +394,8 @@ def get_db_stats(con: duckdb.DuckDBPyConnection) -> dict:
         'table_count': 0,
         'total_records': 0,
         'db_file_size_mb': None,
-        'table_record_counts': {}
+        'table_record_counts': {},
+        'db_size_method': None,
     }
 
     try:
@@ -384,15 +423,157 @@ def get_db_stats(con: duckdb.DuckDBPyConnection) -> dict:
         else:
             stats['total_records'] = None
 
-        db_path = get_db_path() # From config_utils.py
-        if db_path and os.path.exists(db_path):
+        # Determine connection type (local vs MotherDuck)
+        is_motherduck = False
+        try:
+            db_info = con.execute("SELECT path FROM duckdb_databases() WHERE name = 'main'").fetchone()
+            if db_info and isinstance(db_info[0], str) and db_info[0].startswith('md:'):
+                is_motherduck = True
+        except Exception:
+            is_motherduck = False
+
+        if is_motherduck:
+            # Try precise size via DuckDB storage info (compressed bytes)
             try:
-                file_size_bytes = os.path.getsize(db_path)
-                stats['db_file_size_mb'] = round(file_size_bytes / (1024 * 1024), 2)
-            except Exception as e_size:
-                print(f"Could not get database file size: {e_size}")
-                stats['db_file_size_mb'] = f"Error: {e_size}"
-        
+                row = con.execute("SELECT SUM(total_compressed_size) AS bytes FROM duckdb_storage_info()").fetchone()
+                if row and row[0] is not None:
+                    stats['db_file_size_mb'] = round(float(row[0]) / (1024 * 1024), 2)
+                    stats['db_size_method'] = 'md_storage_info'
+            except Exception:
+                pass
+
+            # Fallback: try PRAGMA database_size (may not be available on MD)
+            if stats['db_file_size_mb'] is None:
+                try:
+                    df = con.execute("PRAGMA database_size").fetchdf()
+                    # Heuristic: prefer columns that look like byte counts
+                    byte_cols = [c for c in df.columns if 'byte' in c.lower() or 'size' in c.lower()]
+                    total_bytes = 0
+                    if len(df.index) > 0:
+                        for col in byte_cols:
+                            try:
+                                val = float(df.iloc[0][col])
+                                if val > 0:
+                                    total_bytes = max(total_bytes, val)
+                            except Exception:
+                                pass
+                    if total_bytes > 0:
+                        stats['db_file_size_mb'] = round(total_bytes / (1024 * 1024), 2)
+                        stats['db_size_method'] = 'md_database_size_pragma'
+                except Exception:
+                    pass
+
+            # Final fallback: estimate by schema (row count * avg row width)
+            if stats['db_file_size_mb'] is None:
+                try:
+                    # Prefer managed tables list to limit scope
+                    managed = set(get_defined_table_names() or [])
+                    if managed:
+                        existing = con.execute(
+                            """
+                            SELECT table_name FROM information_schema.tables 
+                            WHERE table_schema = 'main' AND table_name IN (""" + 
+                            ",".join([f"'{t}'" for t in managed]) + ")"
+                        ).fetchall() or []
+                        candidate_tables = [t[0] for t in existing]
+                    else:
+                        candidate_tables = [t[0] for t in (con.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall() or [])]
+
+                    table_rows = {}
+                    for tbl in candidate_tables:
+                        try:
+                            row_cnt = con.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()[0]
+                        except Exception:
+                            row_cnt = 0
+                        table_rows[tbl] = int(row_cnt or 0)
+
+                    # Column type sizes (very rough)
+                    def _type_size(t: str) -> int:
+                        t = (t or '').upper()
+                        if 'BIGINT' in t or 'HUGEINT' in t:
+                            return 8
+                        if 'INTEGER' in t or 'INT32' in t or t == 'INT':
+                            return 4
+                        if 'SMALLINT' in t:
+                            return 2
+                        if 'TINYINT' in t or 'BOOLEAN' in t or 'BOOL' in t:
+                            return 1
+                        if 'DOUBLE' in t or 'FLOAT8' in t or 'TIMESTAMP' in t:
+                            return 8
+                        if 'REAL' in t or 'FLOAT' in t:
+                            return 4
+                        if 'DECIMAL' in t or 'NUMERIC' in t:
+                            return 8
+                        if 'DATE' in t or 'TIME' in t:
+                            return 4
+                        if 'UUID' in t:
+                            return 16
+                        if 'VARCHAR' in t or 'TEXT' in t:
+                            # Default avg length for text; refined below if possible
+                            return 32
+                        # Default fallback
+                        return 8
+
+                    total_bytes = 0
+                    def qident(name: str) -> str:
+                        return '"' + str(name).replace('"', '""') + '"'
+
+                    for tbl, row_cnt in table_rows.items():
+                        if row_cnt == 0:
+                            continue
+                        # Fetch columns and types
+                        cols = con.execute(
+                            f"""
+                            SELECT column_name, data_type
+                            FROM information_schema.columns
+                            WHERE table_schema='main' AND table_name = '{tbl}'
+                            ORDER BY ordinal_position
+                            """
+                        ).fetchall() or []
+
+                        # Estimate width
+                        width = 0
+                        text_cols = []
+                        for col_name, data_type in cols:
+                            sz = _type_size(str(data_type))
+                            width += sz
+                            if sz == 32:  # text placeholder
+                                text_cols.append(col_name)
+
+                        # Try refine text columns average length using a small sample (up to 10k rows)
+                        for col in text_cols:
+                            try:
+                                avg_len_row = con.execute(
+                                    f"SELECT AVG(length({qident(col)})) FROM (SELECT {qident(col)} FROM {qident(tbl)} WHERE {qident(col)} IS NOT NULL LIMIT 10000)"
+                                ).fetchone()
+                                avg_len = float(avg_len_row[0]) if avg_len_row and avg_len_row[0] is not None else 32.0
+                                # Replace default 32 with measured avg (cap to 256 to avoid extremes)
+                                width += max(0.0, min(256.0, avg_len) - 32.0)
+                            except Exception:
+                                pass
+
+                        # Add per-row overhead factor (~10%) and indexing/metadata (~10%)
+                        row_bytes = width * 1.1
+                        total_bytes += int(row_cnt * row_bytes * 1.1)
+
+                    if total_bytes > 0:
+                        stats['db_file_size_mb'] = round(total_bytes / (1024 * 1024), 2)
+                        stats['db_size_method'] = 'md_schema_estimate'
+                except Exception as e_est:
+                    print(f"DB size MD estimate failed: {e_est}")
+
+        else:
+            # Local file size
+            db_path = get_db_path() # From config_utils.py
+            if db_path and os.path.exists(db_path):
+                try:
+                    file_size_bytes = os.path.getsize(db_path)
+                    stats['db_file_size_mb'] = round(file_size_bytes / (1024 * 1024), 2)
+                    stats['db_size_method'] = 'local_file'
+                except Exception as e_size:
+                    print(f"Could not get database file size: {e_size}")
+                    stats['db_file_size_mb'] = f"Error: {e_size}"
+
         return stats
 
     except Exception as e:

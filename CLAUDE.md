@@ -11,20 +11,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Install dependencies (UV package manager)
 uv sync
-# Or with pip (fallback)
-pip install -r requirements.txt
 
 # Start the Streamlit application (default port 8501)
-streamlit run app.py
+uv run streamlit run app.py
 
 # Development mode with auto-reload
-streamlit run app.py --server.runOnSave true
+uv run streamlit run app.py --server.runOnSave true
 
 # Start with custom port
-streamlit run app.py --server.port 8502
+uv run streamlit run app.py --server.port 8502
 
 # Reset database schema (if needed)
-python -c "from utils.db_schema import setup_database; setup_database()"
+uv run python -c "from utils.db_schema import setup_database; setup_database()"
 ```
 
 ## Testing and Development Commands
