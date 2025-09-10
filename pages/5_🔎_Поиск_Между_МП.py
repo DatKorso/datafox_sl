@@ -71,11 +71,14 @@ with col1:
     search_criterion = search_criterion_options[search_criterion_label]
 
 # Use session state to remember search input
+# Initialize widget state once to avoid overriding user edits on reruns
+if 'search_values_textarea' not in st.session_state:
+    st.session_state['search_values_textarea'] = st.session_state.get('last_search_values', '')
+
 search_values_input = st.text_area(
     "Введите значения для поиска (одно или несколько, разделенных пробелом):",
     height=100,
     help="Например: 12345 67890",
-    value=st.session_state.get('last_search_values', ''),
     key="search_values_textarea"
 )
 
